@@ -1,0 +1,79 @@
+workflows:
+  android-workflow:
+    name: Android Build for Kapil CRM
+    max_build_duration: 60
+    environment:
+      node: "22"
+      vars:
+        PACKAGE_NAME: "com.kapilpower.crm"
+
+    scripts:
+      - name: Install dependencies & build web app
+        script: |
+          echo "Installing dependencies..."
+          npm install
+
+          echo "Building Vite app..."
+          npm run build
+
+          echo "Syncing Capacitor Android..."
+          npx cap sync android
+
+      - name: Build Android APK (release)
+        script: |
+          cd android
+          ./gradlew assembleRelease
+
+    artifacts:
+      # APK (and AAB if you later enable it) will be picked from here
+      - android/app/build/outputs/**/*.apk
+      - android/app/build/outputs/**/*.aab
+
+    publishing:
+      email:
+        recipients:
+          - "loan@kapilpower.com"
+
+  ios-workflow:
+    name: iOS Build for Kapil CRM
+    max_build_duration: 60
+    environment:
+      node: "22"
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Install dependencies & build web app
+        script: |
+          echo "Installing dependencies..."
+          npm install
+
+          echo "Building Vite app..."
+          npm run build
+
+          echo "Syncing Capacitor iOS..."
+          npx cap sync ios
+
+      - name: Install CocoaPods
+        script: |
+          cd ios
+          pod install
+
+      - name: Build iOS app (archive)
+        script: |
+          cd ios
+          # NOTE: If your iOS project/scheme is not 'App', change both 'App' values below.
+          xcodebuild \
+            -workspace "App.xcworkspace" \
+            -scheme "App" \
+            -configuration Release \
+            -archivePath "$CM_BUILD_DIR/App.xcarchive" \
+            archive
+
+    artifacts:
+      # iOS archive (you’ll later create .ipa or upload to App Store / TestFlight from this)
+      - $CM_BUILD_DIR/App.xcarchive
+    publishing:
+      email:
+        recipients:
+          - "loan@kapilpower.com"

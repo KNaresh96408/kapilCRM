@@ -1,0 +1,275 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Helper Functions ----------
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function authRole() {
+      return request.auth != null ? request.auth.token.role : null;
+    }
+
+    function authPermissions() {
+      return request.auth != null ? request.auth.token.permissions : [];
+    }
+
+    function hasPermission(p) {
+      return authPermissions().hasAny([p]);
+    }
+
+    function isKapilUser() {
+      return isAuthenticated();
+    }
+
+    // 🔥 Added for system delete of duplicate deal docs
+    function isSystemCleanup() {
+      return request.resource.data._systemDelete == true;
+    }
+
+    // ============================================================
+    // USERS
+    // ============================================================
+    match /Users/{userId} {
+      allow get, read: if isAuthenticated();
+
+      allow update: if isAuthenticated() &&
+        (request.auth.uid == userId || authRole() == "admin");
+
+      allow create, delete: if isAuthenticated() &&
+        authRole() == "admin";
+    }
+
+    // ============================================================
+    // LEADS
+    // ============================================================
+match /leads/{id} {
+  allow read: if isAuthenticated();
+
+  allow create, update: if isAuthenticated() &&
+    (hasPermission("Create") ||
+     hasPermission("Update") ||
+     authRole() in ["admin", "sales", "telesales"] ||
+     isKapilUser());
+
+  // FIXED: delete allowed for auth users
+  allow delete: if isAuthenticated();
+}
+
+    // ============================================================
+    // DEALS
+    // ============================================================
+match /deals/{id} {
+  allow read: if isAuthenticated();
+
+  allow create, update: if isAuthenticated() &&
+    (hasPermission("Create") ||
+     hasPermission("Update") ||
+     authRole() in ["admin", "sales", "telesales"] ||
+     isKapilUser());
+
+  // FIX: allow delete OR allow duplicate cleanup
+  allow delete: if isAuthenticated() ||
+    resource.data._systemDelete == true;
+}
+
+
+    // ============================================================
+    // SALES ORDERS
+    // ============================================================
+    match /salesOrders/{orderId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isAuthenticated() &&
+        (authRole() in ["admin", "sales", "telesales"] ||
+         isKapilUser());
+
+      allow delete: if isAuthenticated() &&
+        authRole() == "admin";
+    }
+    // ============================================================
+    // PROJECTS
+    // ============================================================
+    match /projects/{projectId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isAuthenticated() &&
+        (hasPermission("Create") ||
+         hasPermission("Update") ||
+         authRole() in ["admin", "sales"] ||
+         isKapilUser());
+
+      allow delete: if isAuthenticated() &&
+        authRole() == "admin";
+    }
+    // ============================================================
+    // INVOICES
+    // ============================================================
+    match /invoices/{invoiceId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isAuthenticated() &&
+        (authRole() in ["admin", "sales", "telesales"] ||
+         isKapilUser());
+
+      allow delete: if isAuthenticated() &&
+        authRole() == "admin";
+    }
+    // ============================================================
+    // QUOTATION TEMPLATES
+    // ============================================================
+    match /quotationTemplates/{templateId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isAuthenticated() &&
+        (authRole() == "admin" ||
+         isKapilUser());
+
+      allow delete: if isAuthenticated() &&
+        authRole() == "admin";
+    }
+    // ============================================================
+    // QUOTATIONS
+    // ============================================================
+    match /quotations/{quotationId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isAuthenticated() &&
+        (authRole() in ["admin", "sales", "telesales"] ||
+         isKapilUser());
+
+      allow delete: if isAuthenticated() &&
+        authRole() == "admin";
+    }
+    // ============================================================
+    // QUOTATION GRAPHS
+    // ============================================================
+    match /quotationGraphs/{graphId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isAuthenticated() &&
+        (authRole() in ["admin", "sales", "telesales"] ||
+         isKapilUser());
+
+      allow delete: if isAuthenticated() &&
+        authRole() == "admin";
+    }
+    // ============================================================
+    // META
+    // ============================================================
+    match /meta/{docId} {
+      allow read: if isAuthenticated();
+
+      allow write: if isAuthenticated() &&
+        (authRole() in ["admin", "sales_head"]);
+    }
+
+    // ============================================================
+    // ATTENDANCE
+    // ============================================================
+  match /attendance/{attendanceId} {
+
+  function isDocOwner() {
+    return request.auth != null &&
+      attendanceId.split("_")[0] == request.auth.uid;
+  }
+
+  function isAdmin() {
+    return request.auth != null &&
+      request.auth.token.role in [
+        "admin",
+        "state_head",
+        "sales_head",
+        "zonal_manager"
+      ];
+  }
+
+  // 👇 FIXED
+  // allow read only if the user is authenticated
+  allow read: if request.auth != null;
+
+  // A user can create their own document only
+  allow create: if request.auth != null &&
+    request.resource.data.userId == request.auth.uid;
+
+  // User can update their own doc, admin can update all
+  allow update: if isDocOwner() || isAdmin();
+
+  // Only admin roles can delete
+  allow delete: if isAdmin();
+}
+    // ============================================================
+    // LEAVE REQUESTS
+    // ============================================================
+    match /leaveRequests/{leaveId} {
+
+      allow list: if isAuthenticated();
+
+      allow get: if isAuthenticated() &&
+        (resource.data.userId == request.auth.uid ||
+         authRole() in [
+           "admin",
+           "sales_head",
+           "state_head",
+           "zonal_manager",
+           "team_lead"
+         ]);
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid;
+
+      allow update: if isAuthenticated() &&
+        authRole() in [
+          "admin",
+          "sales_head",
+          "state_head",
+          "zonal_manager",
+          "team_lead"
+        ];
+
+      allow delete: if isAuthenticated() &&
+        authRole() == "admin";
+    }
+    match /holidays/{holidayId} {
+  allow read: if request.auth != null;
+  allow create, update, delete: if request.auth != null && request.auth.token.role in ["admin","sales_head"];
+}
+    // ============================================================
+    // CRM MODULES
+    // ============================================================
+    match /crm_modules/{moduleId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null &&
+        request.auth.token.role == "admin";
+    }
+
+    // ============================================================
+    // CRM FIELDS
+    // ============================================================
+    match /crm_fields/{moduleId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null &&
+        request.auth.token.role == "admin";
+    }
+
+    // ============================================================
+    // SEARCH INDEX (universal search)
+    // ============================================================
+    match /search_index/{id} {
+      allow read: if request.auth != null;   // allow authenticated users
+      allow write: if false;                 // no direct writes allowed
+    }
+
+// ============================================================
+// DYNAMIC MODULE DATA (records_<module>)
+// Needed for universal search + dynamic list/view/edit
+// ============================================================
+match /{col}/{docId} {
+  allow read, write: if request.auth != null
+    && col.matches('records_.*');
+}
+
+  } // END match /databases/{database}/documents
+} // END service cloud.firestore

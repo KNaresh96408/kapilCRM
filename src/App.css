@@ -1,0 +1,143 @@
+/* ----------------------------------------------------------
+   GLOBAL RESET
+---------------------------------------------------------- */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* ----------------------------------------------------------
+   ROOT + BODY
+---------------------------------------------------------- */
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  font-family: "Poppins", system-ui, sans-serif;
+  background: #ffffff;
+  overflow: hidden; /* Prevent double scroll */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Remove Vite default styling */
+:root {
+  line-height: 1.5;
+  font-weight: 400;
+  color: #213547;
+  background: #ffffff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ----------------------------------------------------------
+   FULL LAYOUT FIX — App uses full width
+---------------------------------------------------------- */
+#root {
+  max-width: 100% !important;
+  padding: 0 !important;
+  text-align: left !important;
+}
+
+/* ----------------------------------------------------------
+   UNIVERSAL SCROLL AREA (for Android/iOS + Web)
+---------------------------------------------------------- */
+.main-scroll {
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ----------------------------------------------------------
+   TABLES — Responsive
+---------------------------------------------------------- */
+.table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 12px;
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------
+   SIDEBAR — Full height on desktop
+---------------------------------------------------------- */
+.sidebar {
+  height: 100vh;
+  overflow-y: auto;
+  background: #800000;
+  color: white;
+}
+
+/* ----------------------------------------------------------
+   BUTTON STYLING
+---------------------------------------------------------- */
+button {
+  cursor: pointer;
+  font-family: inherit;
+  border-radius: 8px;
+  padding: 0.6em 1.2em;
+  border: 1px solid transparent;
+  background-color: #1a1a1a;
+  font-size: 1em;
+  transition: 0.25s;
+}
+
+button:hover {
+  border-color: #646cff;
+}
+
+button:active {
+  transform: scale(0.97);
+}
+
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+}
+
+/* ----------------------------------------------------------
+   MOBILE RESPONSIVENESS
+---------------------------------------------------------- */
+@media (max-width: 768px) {
+
+  /* Allow full page scrolling on mobile */
+  #root {
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .sidebar {
+    width: 100% !important;
+    height: auto !important;
+    position: relative;
+  }
+
+  .table-wrapper {
+    overflow-x: scroll;
+  }
+
+  th,
+  td {
+    padding: 10px;
+    font-size: 13px;
+  }
+
+  /* ⭐ Mobile scroll for the monthly attendance calendar */
+  .attendance-month-calendar-container {
+    max-height: 70vh;                 /* visible height on mobile */
+    overflow-y: auto;                 /* enables scrolling */
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 16px;
+  }
+
+}
+

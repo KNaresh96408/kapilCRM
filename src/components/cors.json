@@ -1,0 +1,8 @@
+[
+  {
+    "origin": ["http://localhost:5182", "https://kapil-power-crm.web.app", "https://kapil-power-crm.firebaseapp.com"],
+    "method": ["GET", "POST", "PUT", "DELETE", "HEAD"],
+    "responseHeader": ["Content-Type", "Authorization", "x-goog-meta-uuid", "x-goog-meta-owner", "x-goog-resumable", "x-goog-meta-filename"],
+    "maxAgeSeconds": 3600
+  }
+]

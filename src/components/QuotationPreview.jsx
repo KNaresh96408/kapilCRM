@@ -13,6 +13,10 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 import QuotationPDFLayout from "./QuotationPDFLayout";
+import { usePermission } from "../hooks/usePermission";
+import { useNavigate } from "react-router-dom";
+
+
 
 // Convert To Words (utility)
 const numberToWords = (num) => {
@@ -69,7 +73,10 @@ const numberToWords = (num) => {
 };
 
 const QuotationPreview = ({ data }) => {
+const perm = usePermission("sales-orders");
+
   // incoming quotation/deal-like data (prop name `data` from parent)
+  const navigate = useNavigate();
   const [template, setTemplate] = useState(null);
   const [editableData, setEditableData] = useState({ ...data });
   const [summary, setSummary] = useState(null);
@@ -143,6 +150,18 @@ const QuotationPreview = ({ data }) => {
     }
   }, [editableData, template]);
 
+if (perm.loading) {
+  return <p style={{ padding: 20, color: "#800000" }}>Checking permissions…</p>;
+}
+
+if (!perm.read && !perm.create) {
+  return (
+    <div style={{ padding: 20, textAlign: "center", color: "#800000" }}>
+      <h2>🚫 You don’t have permission to view Sales Orders.</h2>
+    </div>
+  );
+}
+
   if (!summary) {
     return <div style={{ padding: 30 }}>Loading...</div>;
   }
@@ -158,6 +177,7 @@ const QuotationPreview = ({ data }) => {
   // Correct, defensive, avoids undefined fields (uses Firestore doc reads)
   // --------------------------
   const createSalesOrder = async () => {
+
     setCreating(true);
 
     try {
@@ -165,33 +185,38 @@ const QuotationPreview = ({ data }) => {
       // 1) Robust deal lookup (Fix 3)
       // ---------------------------
       let dealId =
-        data?.dealId ||
-        data?.sourceDealId ||
-        editableData?.dealId ||
-        editableData?.sourceDealId ||
-        data?.originalDealId ||
-        null;
-
+  data?.dealId ||
+  data?.sourceDealId ||
+  editableData?.dealId ||
+  editableData?.sourceDealId ||
+  editableData?.createdFromDeal ||
+  data?.createdFromDeal ||
+  null;
 
       // If deal uses autoId/kpiId as document id
       if (!dealId && data?.autoId) dealId = data.autoId;
       if (!dealId && data?.kpiId) dealId = data.kpiId;
 
+      console.log("🔥 FINAL DealId Being Used = ", dealId);
+
+
       // If there is a dealId, attempt to fetch deal doc to prefer canonical values
-      let dealData = null;
-      if (dealId) {
-        try {
-          const dealSnap = await getDoc(doc(db, "deals", dealId));
-          if (dealSnap.exists()) {
-            dealData = dealSnap.data();
-            // if the deal doc doesn't include id fields, ensure we have them
-            dealData.id = dealData.id || dealId;
-            dealData.autoId = dealData.autoId || dealData.kpiId || data?.autoId || data?.kpiId || null;
-          }
-        } catch (err) {
-          console.warn("Failed to fetch deal doc for dealId:", dealId, err);
-        }
-      }
+let dealData = null;
+
+try {
+  const q = query(
+    collection(db, "deals"),
+    where("kpiId", "==", data?.kpiId || editableData?.kpiId || dealId)
+  );
+
+  const snap = await getDocs(q);
+  if (!snap.empty) {
+    dealData = snap.docs[0].data();
+  }
+} catch (err) {
+  console.log("Deal fetch failed", err);
+}
+
 
       // ---------------------------
       // 2) Build canonical values for SO (use summary.totalCost as invoice when available) (Fix 1)
@@ -212,6 +237,44 @@ const QuotationPreview = ({ data }) => {
         editableData.customerPhone ||
         editableData.phone ||
         "";
+        // --- Tele-Sales & Consultant Name ---
+// --- Tele-Sales & Consultant Name ---
+const teleSale =
+  dealData?.teleSale ||
+  editableData.teleSale ||
+  "";
+
+const consultantName =
+  dealData?.consultantName ||
+  editableData.consultantName ||
+  "";
+  // --- Lead Source ---
+const leadSource =
+  dealData?.lead_source ||
+  editableData?.lead_source ||
+  "";
+
+  // --- Sales Hierarchy Fields ---
+const salesArea =
+  dealData?.sales_area ||
+  editableData.salesArea ||
+  "";
+
+const salesZone =
+  dealData?.sales_zone ||
+  editableData.salesZone ||
+  "";
+
+const state =
+  dealData?.state ||
+  editableData.state ||
+  "";
+
+const zonalManager =
+  dealData?.zonal_manager ||
+  editableData.zonalManager ||
+  "";
+
       const address =
         (dealData && dealData.address) ||
         editableData.location ||
@@ -226,15 +289,24 @@ const QuotationPreview = ({ data }) => {
       // 2) editableData.invoiceAmount (if user set)
       // 3) computed summary.totalCost (quotation)
       const invoiceAmount = Number(summary.totalCost || 0);
-
+      console.log("FINAL teleSale = ", teleSale);
+console.log("FINAL consultantName = ", consultantName);
+console.log("dealData = ", dealData);
       // Prepare payload to be written to salesOrders
       const payload = {
         kpiId: kpiIdValue,
+          lead_source: leadSource || null,
         name,
         phone,
         address,
         capacity,
         invoiceAmount,
+       teleSale: teleSale || null,
+consultantName: consultantName || null,
+sales_area: salesArea || dealData?.sales_area || editableData?.salesArea || "",
+sales_zone: salesZone || dealData?.sales_zone || editableData?.salesZone || "",
+zonal_manager: zonalManager || dealData?.zonal_manager || editableData?.zonalManager || "",
+state: state || dealData?.state || editableData?.state || "",
         firstPayment: Number(firstPayment || 0),
         firstPaymentDate: firstPayment ? serverTimestamp() : null,
         secondPayment: 0,
@@ -287,6 +359,8 @@ const QuotationPreview = ({ data }) => {
       // ---------------------------
       // 4) Write sales order to Firestore
       // ---------------------------
+      payload.attachments = dealData?.attachments || [];
+
       await addDoc(collection(db, "salesOrders"), payload);
 
       // ---------------------------
@@ -330,7 +404,7 @@ if (dealId || kpiIdValue) {
       setShowConvertModal(false);
 
       // Navigate to sales orders list
-      window.location.href = "/crm/salesOrders";
+      navigate("/crm/salesOrders");
     } catch (err) {
       console.error("Create Sales Order error:", err);
       alert("Error creating Sales Order: " + (err.message || err));
@@ -338,6 +412,14 @@ if (dealId || kpiIdValue) {
       setCreating(false);
     }
   };
+
+  const cleaned = {
+  ...editableData,
+  teleSale:
+    editableData.teleSale === "no" ? "" : editableData.teleSale,
+  consultantName:
+    editableData.consultantName === "no" ? "" : editableData.consultantName,
+};
 
   // --------------------------
   // Render
@@ -355,19 +437,23 @@ if (dealId || kpiIdValue) {
         <h2 style={{ color: maroon }}>Quotation Preview</h2>
 
         <div style={{ display: "flex", gap: 10 }}>
-          <button
-            onClick={() => setShowConvertModal(true)}
-            style={{
-              background: maroon,
-              color: "#fff",
-              border: "none",
-              padding: "8px 16px",
-              borderRadius: 6,
-              cursor: "pointer",
-            }}
-          >
-            Convert
-          </button>
+<div style={{ display: "flex", gap: 10 }}>
+  {perm.create && (
+    <button
+      onClick={() => setShowConvertModal(true)}
+      style={{
+        background: maroon,
+        color: "#fff",
+        border: "none",
+        padding: "8px 16px",
+        borderRadius: 6,
+        cursor: "pointer",
+      }}
+    >
+      Convert
+    </button>
+  )}
+</div>
 
           <button
             onClick={() => window.history.back()}
@@ -557,12 +643,12 @@ if (dealId || kpiIdValue) {
         Export as PDF
       </button>
 
-      {showPDF && (
-        <QuotationPDFLayout
-          quotationData={{ ...editableData, amountInWords: summary.inWords }}
-          onClose={() => setShowPDF(false)}
-        />
-      )}
+    {showPDF && (
+  <QuotationPDFLayout
+    quotationData={{ ...cleaned, amountInWords: summary.inWords }}
+    onClose={() => setShowPDF(false)}
+  />
+)}
 
       {/* Convert modal */}
       {showConvertModal && (

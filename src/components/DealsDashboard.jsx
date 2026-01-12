@@ -21,6 +21,9 @@ import { useLocation, useNavigate } from "react-router-dom";
 import DealDrawer from "./DealDrawer";
 import QuotationDrawer from "./QuotationDrawer";
 import QuotationPreview from "./QuotationPreview";
+import { usePermission } from "../hooks/usePermission";
+import { getScopedQuery } from "../helpers/getScopedQuery";
+
 
 /* ---------------------------
    DEFAULT COLUMNS (order matters)
@@ -31,9 +34,11 @@ const DEFAULT_COLUMNS = [
   { key: "phone", label: "Phone" },
   { key: "location", label: "Location" },
   { key: "teleSale", label: "Tele-Sales" },
+  { key: "consultantName", label: "Consultant Name" }, 
 
   // KEEP ONLY ONE CONSULTANT FIELD
   { key: "assignedConsultant", label: "Assigned Consultant" },
+  { key: "siteVisitArrangedDate", label: "Site Visit Arranged Date" },
 
   { key: "capacity", label: "Capacity (kW)" },
   { key: "expectedRevenue", label: "Expected Revenue (₹)" },
@@ -43,31 +48,63 @@ const DEFAULT_COLUMNS = [
   // HIDDEN BY DEFAULT (but still available to Manage Columns)
   { key: "status", label: "Status" },
   { key: "leadRef", label: "Lead Ref" },
-  { key: "source", label: "Source" },
+  { key: "lead_source", label: "Lead Source" },
   { key: "locationLink", label: "Location Link" },
   { key: "email", label: "Email" },
   { key: "movedFrom", label: "Moved From" },
+    { key: "updatedAt", label: "Updated At" },
+  { key: "updatedBy", label: "Updated By" },
 ];
 
+const isMobile = window.innerWidth <= 768;
+
 export default function DealsDashboard() {
+
+  const perm = usePermission("deals");
+
+  if (perm.loading) {
+    return (
+      <p style={{ padding: 20, color: "#800000" }}>
+        Checking permissions...
+      </p>
+    );
+  }
+
+  if (!perm.read) {
+    return (
+      <div style={{ padding: 30, textAlign: "center", color: "#800000" }}>
+        <h2>🚫 Access Denied</h2>
+        <p>You do not have permission to view Deals.</p>
+      </div>
+    );
+  }
+
+  return <DealsDashboardInner perm={perm} />;   // ⭐ END HERE
+}
+
+function DealsDashboardInner({ perm }) {
+
+  const location = useLocation();
+  const navigate = useNavigate();
+
   const [deals, setDeals] = useState([]);
-const location = useLocation();
-const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [stageFilter, setStageFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  // visibleColumns now may include dynamic keys as well (we initialize with default keys)
-const DEFAULT_HIDDEN = [
-  "status",
-  "leadRef",
-  "source",
-  "locationLink",
-  "email",
-  "movedFrom"
-];
+  const DEFAULT_HIDDEN = [
+    "status",
+    "leadRef",
+    "lead_source",
+    "locationLink",
+    "email",
+    "movedFrom",
+    "assignedConsultant",
+     "updatedAt",
+  "updatedBy",
+  ];
 
 const [visibleColumns, setVisibleColumns] = useState(
   DEFAULT_COLUMNS
@@ -110,6 +147,25 @@ console.log("deal row keys:", Object.keys(deals[0] || {}));
 
   // Safe cell renderer for dynamic columns (timestamps, arrays, objects)
   const renderCellValue = (value, colKey) => {
+    // 🔗 Design Link (clickable, read-only)
+if ((colKey === "designLink" || colKey === "designlink") && value) {
+  return (
+    <a
+      href={value}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        color: "#800000",
+        fontWeight: 600,
+        textDecoration: "underline",
+        cursor: "pointer",
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      Open Design
+    </a>
+  );
+}
     if (value?.seconds && value?.nanoseconds && typeof value.toDate === "function") {
       return value.toDate().toLocaleDateString("en-GB");
     }
@@ -134,47 +190,66 @@ console.log("deal row keys:", Object.keys(deals[0] || {}));
   /* ---------------------------
      Fetch deals (fixed dedupe)
      --------------------------- */
-  const fetchDeals = async () => {
-    setLoading(true);
-    try {
-      const snap = await getDocs(collection(db, "deals"));
+const fetchDeals = async () => {
+  setLoading(true);
+  try {
 
-      // Map docs -> normalized objects
-      const data = snap.docs.map((d, idx) => {
-        const raw = d.data() || {};
-        return {
-          id: d.id, // Firestore document id (stable)
-          ...raw,
-          // Ensure autoId always available (fallback to KPI-like placeholder)
-          autoId: raw.autoId || raw.kpiId || "",
-          capacity:
-            raw.capacity !== undefined && raw.capacity !== null ? raw.capacity : "",
-          expectedRevenue:
-            raw.expectedRevenue !== undefined && raw.expectedRevenue !== null
-              ? raw.expectedRevenue
-              : "",
-        };
-      });
+    // 1️⃣ FETCH USERS (KEEP AS IS)
+    const usersSnap = await getDocs(collection(db, "Users"));
+    const userMap = {};
+    usersSnap.forEach(u => {
+      const d = u.data();
+      if (d.email && d.Name) {
+        userMap[d.email.trim().toLowerCase()] = d.Name;
+      }
+    });
 
-      // Deduplicate by autoId only (one KPI => one row in UI)
-      // ⭐ FIX: Always dedupe using Firestore document ID (never autoId)
-const uniqueByDocId = {};
+    // 2️⃣ FETCH DEALS (ROLE BASED 🔥)
+    const q = await getScopedQuery("deals");
+    const snap = await getDocs(q);
 
-for (const d of data) {
-  uniqueByDocId[d.id] = d;
-}
+    const data = snap.docs.map((d) => {
+      const raw = d.data() || {};
 
-const uniqueDeals = Object.values(uniqueByDocId);
+      const assignedEmail = (raw.assignedConsultant || "")
+        .trim()
+        .toLowerCase();
 
-      // finally update state with deduped list
-      setDeals(uniqueDeals);
-    } catch (err) {
-      console.error("❌ Error fetching deals:", err);
-      setDeals([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+      return {
+        id: d.id,
+        ...raw,
+
+        autoId: raw.autoId || raw.kpiId || "",
+        designLink: raw.designLink || raw.designlink || "",
+
+        // ⭐ Consultant name resolved safely
+        consultantName: userMap[assignedEmail] || "",
+
+        capacity:
+          raw.capacity !== undefined && raw.capacity !== null
+            ? raw.capacity
+            : "",
+
+        expectedRevenue:
+          raw.expectedRevenue !== undefined &&
+          raw.expectedRevenue !== null
+            ? raw.expectedRevenue
+            : "",
+      };
+    });
+
+    // Deduplicate (KEEP)
+    const uniqueByDocId = {};
+    for (const d of data) uniqueByDocId[d.id] = d;
+
+    setDeals(Object.values(uniqueByDocId));
+  } catch (err) {
+    console.error("❌ Error fetching deals:", err);
+    setDeals([]);
+  } finally {
+    setLoading(false);
+  }
+};
 
   useEffect(() => {
     fetchDeals();
@@ -630,9 +705,22 @@ useEffect(() => {
      Render UI
      --------------------------- */
   return (
-    <div style={styles.container}>
+  <div
+    style={{
+      ...styles.container,
+      flexDirection: isMobile ? "column" : "row",
+      width: "100%",
+    }}
+  >
       {/* Sidebar */}
-      <div style={styles.sidebar}>
+      <div
+  style={{
+    ...styles.sidebar,
+    width: isMobile ? "100%" : "230px",
+    minWidth: isMobile ? "100%" : "230px",
+    maxWidth: isMobile ? "100%" : "230px",
+  }}
+>
         <h3 style={styles.sidebarTitle}>Filter Deals</h3>
 
         <input
@@ -756,141 +844,133 @@ useEffect(() => {
           </div>
         </div>
 
-        {/* Table */}
-        {loading ? (
-          <p style={{ color: "#800000" }}>Loading deals...</p>
-        ) : pagedDeals.length === 0 ? (
-          <p style={{ color: "#800000" }}>No deals found.</p>
-        ) : (
-          <div style={styles.tableWrapper}>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  {/* Render DEFAULT columns (only those visible) */}
-                  {DEFAULT_COLUMNS.filter((c) => visibleColumns.includes(c.key)).map((col) => (
-                    <th key={col.key} style={styles.th}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span>{col.label}</span>
-                        <button
-                          onClick={(e) => openColumnMenu(e, col.key)}
-                          style={styles.columnHeaderBtn}
-                          title="Column menu"
-                        >
-                          ≡
-                        </button>
-                      </div>
-                    </th>
-                  ))}
+{/* Table */}
+{loading ? (
+  <p style={{ color: "#800000" }}>Loading deals...</p>
+) : pagedDeals.length === 0 ? (
+  <p style={{ color: "#800000" }}>No deals found.</p>
+) : (
+  <div>
 
-                  {/* ⭐ APPEND DYNAMIC COLUMNS (after default columns, B1) */}
-                  {dynamicCols
-                    .filter((c) => visibleColumns.includes(c.key))
-                    .map((col) => (
-                      <th key={col.key} style={styles.th}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span>{col.label}</span>
-                          <button
-                            onClick={(e) => openColumnMenu(e, col.key)}
-                            style={styles.columnHeaderBtn}
-                            title="Column menu"
-                          >
-                            ≡
-                          </button>
-                        </div>
-                      </th>
-                    ))}
-
-                  <th style={styles.th}>Quotation</th>
-                  <th style={styles.th}>Attachments</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {pagedDeals.map((dealRow) => (
-                  <tr
-                    key={dealRow.id}
-                    style={styles.tr}
-                    onClick={() => setDrawerDeal(dealRow)}
+     <div
+  style={{
+    height: "65vh",
+    overflowY: "auto",
+    overflowX: "auto",
+    WebkitOverflowScrolling: "touch"
+  }}
+>
+    {/* TABLE SCROLL CONTAINER */}
+    <div style={styles.tableWrapper}>
+      <table style={styles.table}>
+        <thead>
+          <tr>
+            {/* Render DEFAULT columns (only those visible) */}
+            {DEFAULT_COLUMNS.filter((c) => visibleColumns.includes(c.key)).map((col) => (
+              <th key={col.key} style={styles.th}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>{col.label}</span>
+                  <button
+                    onClick={(e) => openColumnMenu(e, col.key)}
+                    style={styles.columnHeaderBtn}
+                    title="Column menu"
                   >
-                    {/* DEFAULT columns cells */}
-                    {DEFAULT_COLUMNS.filter((c) => visibleColumns.includes(c.key)).map((col) => (
-                      <td key={col.key} style={styles.td}>
-                        {col.key === "createdAt"
-                          ? dealRow.createdAt?.toDate
-                            ? dealRow.createdAt.toDate().toLocaleDateString("en-GB")
-                            : dealRow.createdAt || ""
-                          : col.key === "expectedRevenue"
-                          ? `₹ ${Number(dealRow[col.key] || 0).toFixed(2)}`
-                          : dealRow[col.key] !== undefined && dealRow[col.key] !== null
-                          ? dealRow[col.key]
-                          : ""}
-                      </td>
-                    ))}
+                    ≡
+                  </button>
+                </div>
+              </th>
+            ))}
 
-                    {/* DYNAMIC columns cells */}
-                    {dynamicCols
-                      .filter((c) => visibleColumns.includes(c.key))
-                      .map((col) => (
-                        <td key={col.key} style={styles.td}>
-                          {renderCellValue(dealRow[col.key], col.key)}
-                        </td>
-                      ))}
+            {/* ⭐ APPEND DYNAMIC COLUMNS */}
+            {dynamicCols
+              .filter((c) => visibleColumns.includes(c.key))
+              .map((col) => (
+                <th key={col.key} style={styles.th}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span>{col.label}</span>
+                    <button
+                      onClick={(e) => openColumnMenu(e, col.key)}
+                      style={styles.columnHeaderBtn}
+                      title="Column menu"
+                    >
+                      ≡
+                    </button>
+                  </div>
+                </th>
+              ))}
 
-                    <td style={styles.td}>
-                      <button
-                        style={{ ...styles.previewBtn }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openQuotationPreview(dealRow);
-                        }}
-                        title="Preview quotation"
-                      >
-                        🔍 Preview
-                      </button>
-                    </td>
+            <th style={styles.th}>Quotation</th>
+          </tr>
+        </thead>
 
-                    <td style={styles.td}>
-                      <button
-                        style={styles.attachBtn}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          fetchAttachments(dealRow.id);
-                        }}
-                      >
-                        📎 View
-                      </button>
-                    </td>
-                  </tr>
+        <tbody>
+          {pagedDeals.map((dealRow) => (
+            <tr
+              key={dealRow.id}
+              style={styles.tr}
+              onClick={() => setDrawerDeal(dealRow)}
+            >
+              {/* DEFAULT columns cells */}
+{DEFAULT_COLUMNS.filter((c) => visibleColumns.includes(c.key)).map((col) => (
+  <td key={col.key} style={styles.td}>
+    {renderCellValue(dealRow[col.key], col.key)}
+  </td>
+))}
+
+              {/* DYNAMIC columns cells */}
+              {dynamicCols
+                .filter((c) => visibleColumns.includes(c.key))
+                .map((col) => (
+                  <td key={col.key} style={styles.td}>
+                    {renderCellValue(dealRow[col.key], col.key)}
+                  </td>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
 
-        {/* Pagination */}
-        <div style={styles.pagination}>
-          <span>
-            {sortedDeals.length === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + perPage, sortedDeals.length)} of {sortedDeals.length}
-          </span>
+              <td style={styles.td}>
+                <button
+                  style={styles.previewBtn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openQuotationPreview(dealRow);
+                  }}
+                >
+                  🔍 Preview
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    </div>
 
-          <div>
-            <button
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              style={styles.pageBtn}
-            >
-              Prev
-            </button>
-            <button
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              style={styles.pageBtn}
-            >
-              Next
-            </button>
-          </div>
-        </div>
+    {/* PAGINATION (OUTSIDE TABLE SCROLL) */}
+    <div style={styles.pagination}>
+      <span>
+        {sortedDeals.length === 0 ? 0 : startIdx + 1}–
+        {Math.min(startIdx + perPage, sortedDeals.length)} of {sortedDeals.length}
+      </span>
+
+      <div>
+        <button
+          disabled={page <= 1}
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
+          style={styles.pageBtn}
+        >
+          Prev
+        </button>
+        <button
+          disabled={page >= totalPages}
+          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          style={styles.pageBtn}
+        >
+          Next
+        </button>
       </div>
+    </div>
+  </div>
+)}
+</div>
 
       {/* Column menu popup */}
       {activeColumnMenu && (
@@ -1012,6 +1092,7 @@ useEffect(() => {
       existingDeal={drawerDeal}
       onClose={() => setDrawerDeal(null)}
       onDealSaved={fetchDeals}
+      refreshDeals={fetchDeals} 
     />
 )}
 
@@ -1053,27 +1134,37 @@ useEffect(() => {
    Styles (unchanged)
    --------------------------- */
 const styles = {
-  container: {
-    display: "flex",
-    height: "100vh",
-    fontFamily: "Poppins, sans-serif",
-    background: "#fff",
-  },
+container: {
+  display: "flex",
+  minHeight: "100vh",      // ✅ allow content to grow
+  width: "100%",
+  fontFamily: "Poppins, sans-serif",
+  background: "#fff",
+  overflow: "hidden",     // prevent double scroll
+},
 sidebar: {
-  width: 220,
   backgroundColor: "#800000",
   color: "#fff",
   padding: 16,
   display: "flex",
   flexDirection: "column",
   gap: 10,
-  minHeight: "100vh",
+  boxSizing: "border-box",
 },
   sidebarTitle: { fontWeight: "bold", fontSize: 18 },
   searchInput: { padding: 8, borderRadius: 6, border: "none", outline: "none" },
   label: { marginTop: 10 },
   dropdown: { padding: 8, borderRadius: 6 },
-  main: { flex: 1, padding: 28, overflowX: "auto" },
+main: {
+  flex: 1,
+  padding: 16,
+  width: "100%",
+  overflowX: "auto",
+  overflow: "hidden",      // ⭐ ADD THIS
+  minHeight: 0,            // ⭐ ADD THIS (VERY IMPORTANT)
+  WebkitOverflowScrolling: "touch",
+  boxSizing: "border-box",
+},
   headerRow: { display: "flex", alignItems: "center", gap: 8 },
   header: { color: "#800000", fontSize: 24, fontWeight: "bold" },
 
@@ -1113,6 +1204,8 @@ sidebar: {
 
 tableWrapper: {
   width: "100%",
+  maxHeight: "60vh",        // ⭐ FIXED HEIGHT
+  overflowY: "auto",        // ⭐ VERTICAL SCROLL HERE
   overflowX: "auto",
   borderRadius: 8,
   position: "relative",
@@ -1124,14 +1217,11 @@ tableWrapper: {
 th: {
   backgroundColor: "#800000",
   color: "#fff",
-  padding: "8px 6px",
-  textAlign: "left",
-  whiteSpace: "nowrap",
-  fontSize: 13,
-  fontWeight: 600,
+  padding: "12px 10px",
   position: "sticky",
   top: 0,
-  zIndex: 5,
+  zIndex: 10,
+  whiteSpace: "nowrap",
 },
 td: {
   padding: "8px 6px",
@@ -1180,13 +1270,14 @@ tr: {
     fontWeight: 600,
   },
 
-  pagination: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginTop: 20,
-    color: "#800000",
-  },
+pagination: {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginTop: 20,
+  paddingBottom: 20,   // ✅ ADD THIS
+  color: "#800000",
+},
 
   pageBtn: {
     background: "#fff",

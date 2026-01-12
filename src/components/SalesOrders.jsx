@@ -4,8 +4,10 @@ import { collection, getDocs, query, orderBy, doc, getDoc, onSnapshot } from "fi
 import { db } from "../firebaseConfig";
 import * as XLSX from "xlsx";
 import SalesOrderDrawer from "./SalesOrderDrawer";
+import { usePermission } from "../hooks/usePermission";
 // add these imports
 import { useLocation, useNavigate } from "react-router-dom";
+import { getScopedQuery } from "../helpers/getScopedQuery";
 
 /**
  * SalesOrders.jsx
@@ -26,17 +28,49 @@ const DEFAULT_COLUMNS = [
   { key: "kpiId", label: "KPI ID" },
   { key: "name", label: "Customer" },
   { key: "phone", label: "Phone" },
+{ key: "teleSale", label: "Tele-Sales" },
+{ key: "consultantName", label: "Consultant Name" },
+{ key: "lead_source", label: "Lead Source" },
   { key: "address", label: "Address" },
   { key: "capacity", label: "Capacity" },
   { key: "invoiceAmount", label: "Invoice Amount" },
   { key: "paymentReceived", label: "Payment Received" },
   { key: "pendingPayment", label: "Pending" },
   { key: "paymentPercentage", label: "Payment %" },
+  { key: "sixtyPercentReceived", label: "60% Received" },
+{ key: "sixtyPercentDelayDays", label: "60% Delay Days" },
   { key: "status", label: "Status" },
   { key: "createdAt", label: "Created At" },
+  { key: "updatedAt", label: "Updated At" },
+  { key: "updatedBy", label: "Updated By" },
 ];
 
+const isMobile = window.innerWidth <= 768;
+
 export default function SalesOrders() {
+  const perm = usePermission("sales-orders");
+
+  if (perm.loading) {
+    return (
+      <p style={{ padding: 20, color: "#800000" }}>
+        Checking permissions...
+      </p>
+    );
+  }
+
+  if (!perm.read) {
+    return (
+      <div style={{ padding: 30, textAlign: "center", color: "#800000" }}>
+        <h2>🚫 Access Denied</h2>
+        <p>You do not have permission to view Sales Orders.</p>
+      </div>
+    );
+  }
+
+  return <SalesOrdersInner perm={perm} />;
+}
+
+function SalesOrdersInner({ perm }) {
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -51,7 +85,11 @@ export default function SalesOrders() {
   const [sort, setSort] = useState({ key: "createdAt", dir: "desc" });
 
   // column visibility/pinning/filtering/menu
-  const [visibleColumns, setVisibleColumns] = useState(DEFAULT_COLUMNS.map((c) => c.key));
+  const [visibleColumns, setVisibleColumns] = useState(
+  DEFAULT_COLUMNS
+    .map((c) => c.key)
+    .filter((k) => !["updatedAt", "updatedBy", "lead_source"].includes(k))
+);
   const [pinnedColumns, setPinnedColumns] = useState([]);
   const [openMenuFor, setOpenMenuFor] = useState(null);
   const [menuPos, setMenuPos] = useState({ top: 120 });
@@ -81,39 +119,170 @@ export default function SalesOrders() {
 
   // Fetch Sales Orders
   const fetchSalesOrders = async () => {
-    setLoading(true);
-    try {
-      const q = query(collection(db, "salesOrders"), orderBy("createdAt", "desc"));
-      const snap = await getDocs(q);
-      const list = snap.docs.map((d) => {
-        const data = d.data();
-       return {
-  id: d.id,
-  kpiId: data.kpiId || data.autoId || data.KPIID || "",
-  autoId: data.autoId || "",
-  KPIID: data.KPIID || "",
-  name: data.name || "",
-  phone: data.phone || "",
-  address: data.address || data.location || "",
-  capacity: data.capacity || data.systemSize || 0,
-  invoiceAmount: typeof data.invoiceAmount === "number" ? data.invoiceAmount : Number(data.invoiceAmount || 0),
-  paymentReceived: Number(data.paymentReceived || 0),
-  pendingPayment: Number(data.pendingPayment || 0),
-  paymentPercentage: Number(data.paymentPercentage || 0),
-  status: data.status || (data.convertedToProject ? "Converted" : "Not Converted"),
-  createdAt: data.createdAt || null,
-  ...data,
-};
-      });
-      setSalesOrders(list);
-    } catch (err) {
-      console.error("Error fetching sales orders:", err);
-      setSalesOrders([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+  setLoading(true);
+  try {
+    
+    // 1️⃣ Get ALL DEALS first
+const dealsSnap = await getDocs(collection(db, "deals"));
+const dealsMap = {};
 
+dealsSnap.forEach((d) => {
+  const deal = d.data();
+
+  const key =
+    deal.kpiId ||
+    deal.autoId ||
+    deal.KPIID ||
+    "";
+
+  if (!key) return;
+
+  dealsMap[key] = {
+    teleSale: deal.teleSale || "",
+    consultantName: deal.consultantName || ""
+  };
+});
+
+
+    // 2️⃣ Load Sales Orders
+    // 2️⃣ 🔐 ROLE-BASED SALES ORDERS QUERY (FIX)
+// 2️⃣ 🔐 ROLE-BASED SALES ORDERS QUERY (FINAL)
+// 🔐 ROLE-BASED SALES ORDERS QUERY — FINAL
+// 2️⃣ 🔐 ROLE-BASED SALES ORDERS QUERY (FINAL FIX)
+const scopedQuery = await getScopedQuery("salesOrders");
+
+// add orderBy ONLY if not already a Query
+let finalQuery = scopedQuery;
+
+// Firestore Query objects have ._query internally
+if (!scopedQuery._query) {
+  finalQuery = query(scopedQuery, orderBy("createdAt", "desc"));
+}
+
+const snap = await getDocs(finalQuery);
+
+
+    const list = snap.docs.map((d) => {
+      const data = d.data();
+        // ---------- 60% Received & Delay Logic ----------
+  let sixtyPercentReceived = "NO";
+  let sixtyPercentDelayDays = 0;
+
+  const createdDate = data.createdAt?.toDate?.() || new Date();
+
+  // find first date where cumulative reached >= 60%
+  let reachedDate = null;
+  let total = 0;
+
+  const payments = [
+    { amount: data.firstPayment || 0, date: data.firstPaymentDate },
+    { amount: data.secondPayment || 0, date: data.secondPaymentDate },
+    { amount: data.thirdPayment || 0, date: data.thirdPaymentDate },
+    { amount: data.fourthPayment || 0, date: data.fourthPaymentDate },
+  ];
+
+  payments.forEach(p => {
+    if (!p.amount || !p.date) return;
+
+    total += Number(p.amount);
+
+    const percentage = data.invoiceAmount
+      ? (total / Number(data.invoiceAmount)) * 100
+      : 0;
+
+    if (!reachedDate && percentage >= 59.3) {
+      reachedDate = p.date?.toDate?.() || new Date(p.date);
+    }
+  });
+
+  if (reachedDate) {
+    // ---------- 60% ACHIEVED ----------
+    sixtyPercentReceived = "YES";
+
+    const diffMs = reachedDate - createdDate;
+    sixtyPercentDelayDays = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+
+  } else {
+    // ---------- NOT ACHIEVED ----------
+   // ---------- NOT ACHIEVED ----------
+sixtyPercentReceived = "NO";
+
+const today = new Date();
+
+// pure date only (no time)
+const created = new Date(
+  createdDate.getFullYear(),
+  createdDate.getMonth(),
+  createdDate.getDate()
+);
+
+const current = new Date(
+  today.getFullYear(),
+  today.getMonth(),
+  today.getDate()
+);
+
+// diff in days exactly
+const diffMs = current - created;
+sixtyPercentDelayDays = Math.max(0, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+  }
+
+
+      const key =
+        data.kpiId ||
+        data.autoId ||
+        data.KPIID ||
+        "";
+
+      const link = dealsMap[key] || {};
+
+      return {
+         ...data,
+        id: d.id,
+
+        kpiId: key,
+        autoId: data.autoId || "",
+        KPIID: data.KPIID || "",
+
+        name: data.name || "",
+        phone: data.phone || "",
+        address: data.address || data.location || "",
+
+        teleSale: data.teleSale || "",
+        consultantName: data.consultantName || "",
+        lead_source: data.lead_source || "",
+
+        capacity: data.capacity || data.systemSize || 0,
+        invoiceAmount:
+          typeof data.invoiceAmount === "number"
+            ? data.invoiceAmount
+            : Number(data.invoiceAmount || 0),
+
+        paymentReceived: Number(data.paymentReceived || 0),
+        pendingPayment: Number(data.pendingPayment || 0),
+        paymentPercentage: Number(data.paymentPercentage || 0),
+
+        sixtyPercentReceived,
+sixtyPercentDelayDays,
+
+        status:
+          data.status ||
+          (data.convertedToProject ? "Converted" : "Not Converted"),
+
+        createdAt: data.createdAt || null,
+
+       
+      };
+    });
+
+    setSalesOrders(list);
+  } catch (err) {
+    console.error("Error fetching sales orders:", err);
+    setSalesOrders([]);
+  } finally {
+    setLoading(false);
+  }
+};
   useEffect(() => {
     fetchSalesOrders();
   }, []);
@@ -411,6 +580,9 @@ const visibleCols = [
         if (c.key === "createdAt" && r.createdAt?.toDate) {
           val = r.createdAt.toDate().toLocaleString();
         }
+        if (c.key === "updatedAt" && r.updatedAt?.toDate) {
+  val = r.updatedAt.toDate().toLocaleString();
+}
         row[c.label] = val ?? "";
       });
       return row;
@@ -502,10 +674,23 @@ const visibleCols = [
     return name.toString().replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
   }
 
-  return (
-    <div style={styles.container}>
+return (
+  <div
+    style={{
+      ...styles.container,
+      flexDirection: isMobile ? "column" : "row",
+      width: "100%",
+    }}
+  >
       {/* Sidebar */}
-      <div style={styles.sidebar}>
+      <div
+  style={{
+    ...styles.sidebar,
+    width: isMobile ? "100%" : "230px",
+    minWidth: isMobile ? "100%" : "230px",
+    maxWidth: isMobile ? "100%" : "230px",
+  }}
+>
         <h3 style={styles.sidebarTitle}>Filter Sales Orders</h3>
 
         <input
@@ -627,14 +812,36 @@ const visibleCols = [
         </div>
 
         {/* TABLE */}
-        {loading ? (
-          <p style={{ color: "#800000" }}>Loading sales orders...</p>
-        ) : (
-          <>
-            <div style={styles.tableWrapper}>
-              <table style={styles.table}>
-                <thead>
-  <tr>
+        {/* TABLE */}
+{loading ? (
+  <p style={{ color: "#800000" }}>Loading sales orders...</p>
+) : (
+ <div
+  style={{
+    height: isMobile ? "auto" : "65vh", // desktop scroll, mobile natural
+    maxHeight: isMobile ? "50vh" : "auto",
+    position: "relative", 
+    WebkitOverflowScrolling: "touch",
+  }}
+>
+    <div
+      style={{
+        ...styles.tableWrapper,
+        overflowX: "auto",          // 🔥 horizontal scroll
+        WebkitOverflowScrolling: "touch",
+      }}
+    >
+       <div
+  style={{
+    height: "65vh",
+    overflowY: "auto",
+    overflowX: "auto",
+    WebkitOverflowScrolling: "touch"
+  }}
+>
+      <table style={styles.table}>
+        <thead>
+          <tr>
     {/* 1️⃣ STATIC COLUMNS (only visible ones) */}
     {DEFAULT_COLUMNS.filter((c) => visibleColumns.includes(c.key)).map((col) => (
       <th key={col.key} style={styles.th}>
@@ -699,37 +906,12 @@ const visibleCols = [
 >
   {/* 1️⃣ STATIC COLUMN CELLS */}
   {DEFAULT_COLUMNS
-    .filter((c) => visibleColumns.includes(c.key))
-    .map((col) => {
-      const val = so[col.key];
-      let display = "";
-
-      if (col.key === "createdAt") {
-        display = val?.toDate
-          ? val.toDate().toLocaleDateString("en-GB")
-          : val
-          ? new Date(val).toLocaleDateString("en-GB")
-          : "";
-      } else if (
-        col.key === "invoiceAmount" ||
-        col.key === "paymentReceived" ||
-        col.key === "pendingPayment"
-      ) {
-        display = val ? `₹${Number(val).toLocaleString()}` : "₹0";
-      } else if (col.key === "paymentPercentage") {
-        display = val ? `${Number(val).toFixed(1)}%` : "0%";
-      } else if (col.key === "capacity") {
-        display = val ? `${val} kW` : "0 kW";
-      } else {
-        display = val ?? "";
-      }
-
-      return (
-        <td key={col.key} style={styles.td}>
-          {display}
-        </td>
-      );
-    })}
+  .filter((c) => visibleColumns.includes(c.key))
+  .map((col) => (
+    <td key={col.key} style={styles.td}>
+      {renderCellValue(so[col.key], col.key)}
+    </td>
+  ))}
 
   {/* 2️⃣ DYNAMIC COLUMN CELLS */}
   {dynamicCols
@@ -745,6 +927,7 @@ const visibleCols = [
                 </tbody>
               </table>
             </div>
+          </div>
 
             {/* Pagination */}
             <div style={styles.pagination}>
@@ -760,22 +943,22 @@ const visibleCols = [
                 </button>
               </div>
             </div>
-          </>
+          </div>
         )}
       </div>
 
       {/* Drawer */}
       {isDrawerOpen && selectedSO && (
         <SalesOrderDrawer
-          so={selectedSO}
-          onClose={() => {
-            setIsDrawerOpen(false);
-            setSelectedSO(null);
-            // refresh list after potential changes
-            fetchSalesOrders();
-          }}
-          fieldsDef={fieldsDef} // pass dynamic defs to drawer (optional)
-        />
+  so={selectedSO}
+  perm={perm}      // <-- ADD THIS
+  onClose={() => {
+    setIsDrawerOpen(false);
+    setSelectedSO(null);
+    fetchSalesOrders();
+  }}
+  fieldsDef={fieldsDef}
+/>
       )}
 
       {showExportDialog && <ExportDialog />}
@@ -784,49 +967,75 @@ const visibleCols = [
 
   // helper used in dynamic cell render
   function renderCellValue(value, colKey) {
-    if (value?.seconds && value?.nanoseconds && typeof value.toDate === "function") {
-      return value.toDate().toLocaleDateString("en-GB");
-    }
-    if (Array.isArray(value)) return value.join(", ");
-    if (typeof value === "object" && value !== null) {
-      if (value.name) return value.name;
-      if (value.label) return value.label;
-      try {
-        return JSON.stringify(value);
-      } catch {
-        return "";
-      }
-    }
-    // numeric formatting for invoice-like keys
-    if ((colKey === "invoiceAmount" || colKey === "paymentReceived" || colKey === "pendingPayment") && value !== undefined && value !== null && value !== "") {
-      return `₹ ${Number(value).toFixed(2)}`;
-    }
-    return value ?? "";
+  // Firestore Timestamp
+  if (value?.seconds && value?.nanoseconds && typeof value.toDate === "function") {
+    return value.toDate().toLocaleDateString("en-GB");
   }
+
+  // Currency
+  if (
+    colKey === "invoiceAmount" ||
+    colKey === "paymentReceived" ||
+    colKey === "pendingPayment"
+  ) {
+    return `₹${Number(value || 0).toLocaleString()}`;
+  }
+
+  // Percentage (🔥 FIX)
+  if (colKey === "paymentPercentage") {
+    return `${Number(value || 0).toFixed(1)}%`;
+  }
+
+  // Capacity
+  if (colKey === "capacity") {
+    return `${Number(value || 0)} kW`;
+  }
+
+  // Arrays
+  if (Array.isArray(value)) return value.join(", ");
+
+  // Objects
+  if (typeof value === "object" && value !== null) {
+    if (value.name) return value.name;
+    if (value.label) return value.label;
+    return "";
+  }
+
+  return value ?? "";
+}
 }
 
 /* styles (same visual language as LeadsDashboard) */
 const styles = {
-  container: {
-    display: "flex",
-    height: "100vh",
-    fontFamily: "Poppins, sans-serif",
-    backgroundColor: "#fff",
-  },
-  sidebar: {
-    width: 260,
-    backgroundColor: "#800000",
-    color: "#fff",
-    padding: 20,
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-  },
+container: {
+  display: "flex",
+  width: "100%",
+  minHeight: "100vh",     // ✅ KEY FIX
+  overflow: "hidden",
+  fontFamily: "Poppins, sans-serif",
+  backgroundColor: "#fff",
+},
+sidebar: {
+  backgroundColor: "#800000",
+  color: "#fff",
+  padding: 16,
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+  boxSizing: "border-box",
+},
   sidebarTitle: { fontWeight: "bold", fontSize: 18 },
   searchInput: { padding: 8, borderRadius: 6, border: "none" },
   label: { marginTop: 10, fontSize: 14, color: "#fff" },
   dropdown: { padding: 8, borderRadius: 6, border: "none" },
-  mainContent: { flex: 1, padding: 28, overflowX: "auto" },
+mainContent: {
+  flex: 1,
+  width: "100%",
+  padding: isMobile ? 12 : 28,
+  overflowY: "auto",     // ⭐ KEY
+  overflowX: "hidden",  // ⭐ KEY
+  boxSizing: "border-box",
+},
   headerRow: { display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 2 },
   header: { color: "#800000", fontSize: 24, fontWeight: "bold" },
   exportBtn: {
@@ -867,30 +1076,36 @@ const styles = {
     color: "#800000",
     fontSize: 14,
   },
-  tableWrapper: {
-    width: "100%",
-    overflowX: "auto",
-    borderRadius: 8,
-    position: "relative",
-    zIndex: 0,
-  },
-  table: { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
-  th: {
-    backgroundColor: "#800000",
-    color: "#fff",
-    padding: "12px 10px",
-    textAlign: "left",
-    whiteSpace: "nowrap",
-    position: "relative",
-  },
-  td: {
-    padding: "12px 10px",
-    fontSize: 14,
-    color: "#333",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
+tableWrapper: {
+  width: "100%",
+  overflowX: "auto",
+  overflowY: "hidden",
+  WebkitOverflowScrolling: "touch",
+},
+  table: {
+  width: "100%",
+  borderCollapse: "collapse",
+  tableLayout: "auto",     // ⭐ VERY IMPORTANT
+  minWidth: "1200px",      // ⭐ forces horizontal scroll on Android
+},
+th: {
+  backgroundColor: "#800000",
+  color: "#fff",
+  padding: "12px 10px",
+  position: "sticky",
+  top: 0,
+  zIndex: 10,
+  whiteSpace: "nowrap",
+},
+td: {
+  padding: "12px 10px",
+  fontSize: 14,
+  color: "#333",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  minWidth: 140,       // ⭐ IMPORTANT
+},
   tr: { borderBottom: "1px solid #eee" },
   headerCell: { display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative" },
   iconButton: {

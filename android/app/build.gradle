@@ -3,24 +3,42 @@ apply plugin: 'com.android.application'
 android {
     namespace "com.kapilpower.crm"
     compileSdk rootProject.ext.compileSdkVersion
+
     defaultConfig {
         applicationId "com.kapilpower.crm"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 8
+        versionName "1.0.7"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
-             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
-             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    // ⭐⭐ ADD THIS ⭐⭐
+    signingConfigs {
+        release {
+            storeFile file("C:/Users/admin/OneDrive/Desktop/kapilpower-final-release-key.jks")
+            storePassword "NareshK@9640"
+            keyAlias "kapilcrm"
+            keyPassword "NareshK@9640"
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+
+            // ⭐⭐ ADD THIS ⭐⭐
+            signingConfig signingConfigs.release
         }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 }
 
@@ -40,6 +58,7 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
+    implementation 'com.google.android.gms:play-services-location:21.0.1' // or latest
 }
 
 apply from: 'capacitor.build.gradle'

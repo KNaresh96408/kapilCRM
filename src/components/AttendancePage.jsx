@@ -4,6 +4,77 @@
 // It also expects Leaflet available as a dynamic import when used.
 
 import React, { useEffect, useState, useRef } from "react";
+import { Geolocation } from "@capacitor/geolocation";
+import { Capacitor } from "@capacitor/core";
+import kapilLogo from "../kapil-logo.png";
+import { useNavigate } from "react-router-dom";
+
+
+
+// ------------------------------
+// FOREGROUND LOCATION PERMISSION
+// ------------------------------
+async function requestLocationPermission() {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const perm = await Geolocation.requestPermissions();
+
+      if (
+        perm.location === "granted" ||
+        perm.coarseLocation === "granted"
+      ) {
+        return true;
+      }
+
+      return false;
+    }
+
+    // Web fallback
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        () => resolve(true),
+        () => resolve(false),
+        { enableHighAccuracy: true }
+      );
+    });
+  } catch (e) {
+    console.error("Location permission error:", e);
+    return false;
+  }
+}
+
+// ------------------------------
+// BACKGROUND LOCATION PERMISSION (Android only)
+// ------------------------------
+async function requestBackgroundLocation() {
+  if (!Capacitor.isNativePlatform()) return true;
+
+  try {
+    const perm = await Geolocation.checkPermissions();
+
+    // Foreground not granted → stop
+    if (
+      perm.location !== "granted" &&
+      perm.coarseLocation !== "granted"
+    ) {
+      alert("Please allow location permission first.");
+      return false;
+    }
+
+    // Android 10+ → ask user to allow background manually
+    if (Capacitor.getPlatform() === "android") {
+      alert(
+        "For background tracking, please allow Location → 'Allow all the time' in App Settings."
+      );
+      window.open("app-settings:/", "_self");
+    }
+
+    return true;
+  } catch (e) {
+    console.warn("Background permission error", e);
+    return false;
+  }
+}
 import {
   fetchAttendanceDoc,
   createOrEnsureDoc,
@@ -22,6 +93,7 @@ import AttendanceMonthCalendar from "./AttendanceMonthCalendar";
 import AdminHolidayPanel from "./AdminHolidayPanel";
 import { getUserRoleFromDB } from "../helpers/getUserRole";
 import { useAuth } from "../context/AuthContext";
+import { getUserNameFromDB } from "../helpers/getUserName";
 
 
 // Detect if GPS permission is denied
@@ -38,8 +110,7 @@ async function isLocationPermissionDenied() {
 // dynamic leaflet import target
 let L = null;
 
-// load logged-in user from localStorage (your app already uses this)
-const USER = JSON.parse(localStorage.getItem("kp-user") || "{}");
+// load logged-in user from localStorage (your app already uses this)// <-- use real logged-in user from AuthContext
 
 // helper: detect admin-like users
 const isAdminUser = (role, user) => {
@@ -50,6 +121,13 @@ const isAdminUser = (role, user) => {
   if (user?.uid && adminUIDs.includes(user.uid)) return true;
   return false;
 };
+
+// Map UID → User Name using userList
+const getUserNameById = (id, userList) => {
+  const userObj = userList.find((u) => u.id === id);
+  return userObj ? userObj.name : id; // fallback = UID
+};
+
 
 // ms -> hh:mm:ss
 const msToHMS = (ms) => {
@@ -67,9 +145,38 @@ const HALF_DAY_MIN = 240; // 4 hours
 const isMobile = window.innerWidth < 768; 
 
 export default function AttendancePage() {
-    const { user, roleData, loading: authLoading } = useAuth();
+  const { user, roleData } = useAuth();
+  // -------------------------
+// PROMINENT DISCLOSURE STATE (Google Play requirement)
+// -------------------------
+const [showLocationDisclosure, setShowLocationDisclosure] = useState(
+  localStorage.getItem("locationDisclosureAccepted") !== "true"
+);
+
+
+const uid = user?.uid;
+
+    
+  const [userName, setUserName] = useState("");
+
+useEffect(() => {
+  async function loadName() {
+    if (!user?.uid) return;
+
+    let name = await getUserNameFromDB(user.uid);
+
+    // fallback = email prefix
+    if (!name) name = user.email?.split("@")[0];
+
+    setUserName(name);
+  }
+
+  loadName();
+}, [user]);
+    const USER = user || {};  
 
   // basic
+  const [checkingIn, setCheckingIn] = useState(false);
   const [todayStr] = useState(getTodayStr());
   const [attendance, setAttendance] = useState(null); // today's attendance doc
   const [loading, setLoading] = useState(true);
@@ -120,19 +227,17 @@ export default function AttendancePage() {
   // interval refs
   const pollRef = useRef(null);
 
-  // user info
-  const uid = user?.uid;
-  const userName = USER?.displayName || USER?.name || USER?.email || "User";
-
   // Check-in window (your rule)
-  const CHECKIN_START = { h: 8, m: 0 };
-  const CHECKIN_END = { h: 12, m: 0 };
+  // Check-in allowed only between 8:30 AM and 11:00 AM
+const CHECKIN_START = { h: 8, m: 30 };
+const CHECKIN_END   = { h: 11, m: 0 };
 
   // Auto-checkout threshold when no location updates (in ms)
   const AUTO_CHECKOUT_AFTER = 30 * 60 * 1000; // 30 minutes
 
   // Export popup state
   const [showExportPopup, setShowExportPopup] = useState(false);
+  const navigate = useNavigate();
 
   // -------------------------
   // dynamic leaflet load
@@ -147,9 +252,9 @@ export default function AttendancePage() {
         // initialize maps if containers present
         if (mounted) {
           // init today map if that DOM exists and role allows
-          if (todayMapRef.current && (isAdminUser(role, USER) || role === "sales_head")) {
-            initTodayMap();
-          }
+          if (todayMapRef.current) {
+  initTodayMap();
+}
           // init admin map if admin DOM exists
           if (adminMapRef.current && (isAdminUser(role, USER) || role === "sales_head")) {
             initAdminMap();
@@ -160,6 +265,7 @@ export default function AttendancePage() {
         console.warn("Leaflet load failed:", e);
       }
     })();
+    
     return () => {
       mounted = false;
     };
@@ -271,91 +377,126 @@ useEffect(() => {
   // -------------------------
   // check-in
   // -------------------------
-  const handleCheckIn = async () => {
-    const now = new Date();
+const handleCheckIn = async () => {
+  if (checkingIn) return; // prevent double click
+  setCheckingIn(true);    // ✅ instant UI response
 
-    // check holiday / working-day rules first
+  try {
+    // ------------------------------
+    // YOUR EXISTING LOGIC (UNCHANGED)
+    // ------------------------------
+
+    const granted = await requestLocationPermission();
+   if (!granted) {
+  alert("Location is required for attendance. Please enable GPS.");
+  setAttendance(null);
+  setCheckingIn(false);
+  return;
+}
+
+    await requestBackgroundLocation();
+
+    const now = new Date();
     const today = todayStr;
+
     const holidayForUser = isHolidayForUser(today, uid);
     const workingDayForUser = isWorkingDayForUser(today, uid);
 
-    // Holiday overrides: if this day is marked as holiday for user/all -> disable check-in
     if (holidayForUser) {
-      alert("Today is marked as holiday (for you or all users). Check-in disabled.");
-      return;
-    }
+  alert("Today is marked as holiday. Check-in disabled.");
+  setAttendance(null);
+  setCheckingIn(false);
+  return;
+}
 
-    // If it's Sunday and NOT explicitly a working day for this user -> disable
-    if (now.getDay() === 0 && !workingDayForUser) {
-      alert("Today is Sunday / holiday. Check-in disabled unless admin allowed.");
-      return;
-    }
+   if (now.getDay() === 0 && !workingDayForUser) {
+  alert("Today is Sunday / holiday. Check-in disabled unless admin allowed.");
+  setAttendance(null);
+  setCheckingIn(false);
+  return;
+}
 
-    // If outside defined check-in window (but we still allow if workingDayForUser? user asked only Sunday exception — keep window rule for all)
     const start = new Date();
     start.setHours(CHECKIN_START.h, CHECKIN_START.m, 0, 0);
     const end = new Date();
     end.setHours(CHECKIN_END.h, CHECKIN_END.m, 0, 0);
+
     if (now < start || now > end) {
-      alert("Check-in is allowed only during allowed hours.");
-      return;
+  alert("Check-in is allowed only between 8:30 AM and 11:00 AM.");
+  setAttendance(null);        // rollback UI
+  setCheckingIn(false);
+  return;
+}
+// ✅ OPTIMISTIC UI — START COUNTDOWN ONLY AFTER ALL VALIDATIONS
+setAttendance((prev) => ({
+  ...(prev || {}),
+  _clientCheckIn: new Date().toISOString(),
+  checkInTime: { toDate: () => new Date() }, // UI-only
+}));
+
+    const pos = await Geolocation.getCurrentPosition({
+      enableHighAccuracy: true,
+    });
+
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
+
+    let finalName = userName;
+    if (!finalName) {
+      finalName = await getUserNameFromDB(uid);
+      if (!finalName) finalName = user.email?.split("@")[0] || uid;
+      setUserName(finalName);
     }
 
-    if (!navigator.geolocation) {
-      alert("Location not supported.");
-      return;
-    }
+    await checkIn({
+      uid,
+      userName: finalName,
+      dateStr: todayStr,
+      coords: { lat, lng },
+      clientIso: new Date().toISOString(),
+    });
 
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          const clientIso = new Date().toISOString();
-          await checkIn({
-            uid,
-            userName,
-            dateStr: todayStr,
-            coords: { lat: pos.coords.latitude, lng: pos.coords.longitude },
-            clientIso,
-          });
-          const updated = await fetchAttendanceDoc(uid, todayStr);
-          setAttendance(updated);
-          startTracking();
-          alert("Checked in successfully!");
-        } catch (err) {
-          console.error("CHECKIN ERR:", err);
-          alert("Check-in failed");
-        }
-      },
-      () => alert("Location permission denied"),
-      { enableHighAccuracy: true }
-    );
-  };
+    const updated = await fetchAttendanceDoc(uid, todayStr);
+    setAttendance(updated);
+
+    startTracking();
+    alert("Checked in successfully!");
+
+    await requestBackgroundLocation();
+  } catch (err) {
+    console.error("CHECK-IN ERROR:", err);
+
+    // ❌ rollback ONLY UI state
+    setAttendance(null);
+  } finally {
+    setCheckingIn(false);
+  }
+};
 
   // -------------------------
   // tracking (polling locations)
   // -------------------------
-  const addTrackingPoint = async () => {
-    if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          await pollAddLocation({
-            uid,
-            dateStr: todayStr,
-            coords: { lat: pos.coords.latitude, lng: pos.coords.longitude },
-          });
-          const updated = await fetchAttendanceDoc(uid, todayStr);
-          setAttendance(updated);
-        } catch (err) {
-          console.warn("pollAddLocation error", err);
-        }
+const addTrackingPoint = async () => {
+  try {
+    const pos = await Geolocation.getCurrentPosition({
+      enableHighAccuracy: true,
+    });
+
+    await pollAddLocation({
+      uid,
+      dateStr: todayStr,
+      coords: {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
       },
-      (err) => {
-        console.warn("geolocation error while polling", err);
-      },
-      { enableHighAccuracy: true }
-    );
-  };
+    });
+
+    const updated = await fetchAttendanceDoc(uid, todayStr);
+    setAttendance(updated);
+  } catch (e) {
+    console.warn("Tracking location error", e);
+  }
+};
 
   const startTracking = () => {
     if (pollRef.current) return;
@@ -443,25 +584,20 @@ const loadAdmin = async () => {
 
     // build user dropdown
 // build user dropdown (remove duplicates cleanly)
-const seen = new Map();
+const seen = new Set();
+const list = [];
 
 all.forEach((r) => {
   if (!r.userId) return;
 
-  // Normalize username
-  let cleanName = r.userName?.trim() || r.userId;
-
-  // Key used to detect duplicates
-  const key = cleanName.toLowerCase();
-
-  // Store only first occurrence
-  if (!seen.has(key)) {
-    seen.set(key, { id: r.userId, name: cleanName });
+  if (!seen.has(r.userId)) {
+    seen.add(r.userId);
+    list.push({
+      id: r.userId,
+      name: r.userName?.trim() || r.userId,
+    });
   }
 });
-
-// Convert map → array
-const list = Array.from(seen.values());
 
 setUserList(list);
 } catch (err) {
@@ -472,59 +608,293 @@ setUserList(list);
 // Filter admin data by selected user
 const adminFiltered =
   filterUser === "" ? adminData : adminData.filter((r) => r.userId === filterUser);
-  // -------------------------
-  // export helpers (Current Month or All) with popup
-  // -------------------------
-  const buildExportWorkbook = (rowsMap) => {
+// ---------------------------------------------------------
+// EXPORT HELPERS (FINAL VERSION)
+// ---------------------------------------------------------
+
+// Color fill for XLSX
+const getFillColor = (status) => {
+  status = (status || "").toLowerCase();
+  if (status === "present") return { fgColor: { rgb: "C6EFCE" } }; // green
+  if (status === "half-day") return { fgColor: { rgb: "FFEB9C" } }; // yellow
+  if (status === "absent") return { fgColor: { rgb: "F8CBAD" } }; // red
+  return null;
+};
+
+// Sunday check
+const isSunday = (dateStr) => {
+  const d = new Date(dateStr);
+  return d.getDay() === 0;
+};
+
+// Summary calculation
+const calculateSummary = (rows) => {
+  let present = 0,
+    half = 0,
+    absent = 0;
+
+  rows.forEach((r) => {
+    const s = (r.status || "").toLowerCase();
+
+    // 🟢 Present
+    if (s === "present") present++;
+
+    // 🟡 Half Day
+    else if (s.includes("half")) half++;
+
+    // 🔴 Absent
+    else if (s === "absent") absent++;
+
+    // 🟣 Holidays / Festivals / Sunday
+    // (Do NOT count them as absent)
+    else if (s === "sunday" || s === "holiday") {
+      // do nothing
+    }
+  });
+
+
+  return { present, half, absent };
+};
+
+/** ----------------------------
+ * Helper: Get User Name
+ * ---------------------------- */
+const getExportName = (row, userList) => {
+  if (!row) return "";
+
+  if (row.userName && row.userName.trim() !== "") {
+    return row.userName.trim();
+  }
+
+  if (row.userId && Array.isArray(userList)) {
+    const u = userList.find(u => u.id === row.userId);
+    if (u && u.name) return u.name;
+  }
+
+  return row.userId || "Unknown";
+};
+
+// Build a monthly sheet
+const buildMonthlySheet = (records, holidays, workingDays) => {
+  if (!records.length) return null;
+
+  const month = records[0].date.slice(0, 7); // YYYY-MM
+// ✅ Build unique users by NAME (not UID)
+const usersMap = new Map();
+
+records.forEach((r) => {
+  const name = getExportName(r, userList)?.trim();
+  if (!name) return;
+
+  if (!usersMap.has(name)) {
+    usersMap.set(name, {
+      name,
+      ids: new Set(r.userId ? [r.userId] : []),
+    });
+  } else {
+    if (r.userId) {
+      usersMap.get(name).ids.add(r.userId);
+    }
+  }
+});
+
+const users = Array.from(usersMap.values());
+
+  const today = new Date().toISOString().split("T")[0];
+
+  // List month days
+  const year = Number(month.split("-")[0]);
+  const m = Number(month.split("-")[1]) - 1;
+  const totalDays = new Date(year, m + 1, 0).getDate();
+
+  const days = [];
+  for (let d = 1; d <= totalDays; d++) {
+    days.push(`${month}-${String(d).padStart(2, "0")}`);
+  }
+
+  // Sheet header
+  const sheetData = [
+    [
+  "Name",
+  ...days,
+  "Total Working Days",
+  "Present",
+  "Half-days",
+  "Absent",
+  "Employee Working Days"
+],
+  ];
+
+  users.forEach((user) => {
+  const row = [user.name];      // show proper name in excel
+ const userRows = records.filter(
+  (r) =>
+    (r.userName && r.userName.trim() === user.name) ||
+    (user.ids && r.userId && user.ids.has(r.userId))
+);
+console.log(
+  "EXPORT USER:",
+  user.name,
+  "ROWS:",
+  userRows.length
+);
+
+ console.log("EXPORT USER:", user.name, "ROWS:", userRows.length);
+
+    const summaryRows = [];
+
+    days.forEach((d) => {
+      const isFuture = d > today;
+
+     let rec = userRows.find((r) => r.date === d);
+let status = "";
+
+// 1️⃣ Future → blank
+if (isFuture) {
+  status = "";
+}
+
+// 2️⃣ Attendance exists → TRUST DATABASE (NO OVERRIDE)
+else if (rec && rec.checkInTime) {
+  const mins = rec.totalMinutes ?? rec.minutes ?? 0;
+
+  if (!rec.checkOutTime || mins < HALF_DAY_MIN) {
+    status = "half-day";
+  } else {
+    status = "present";
+  }
+}
+
+// 3️⃣ Holiday (only if NO attendance)
+else if (
+  holidays.some(
+    h =>
+      h.date === d &&
+      (h.applyToAll || userIds.some(id => h.users?.includes(id)))
+  )
+) {
+  const h = holidays.find(
+    h =>
+      h.date === d &&
+      (h.applyToAll || userIds.some(id => h.users?.includes(id)))
+  );
+  status = h.label || "holiday";
+}
+
+// 4️⃣ Sunday (only if NO attendance & NO admin override)
+else if (
+  isSunday(d) &&
+  !workingDays.some(
+    w =>
+      w.date === d &&
+      (w.applyToAll || userIds.some(id => w.users?.includes(id)))
+  )
+) {
+  status = "";
+}
+
+// 5️⃣ Admin working day (user absent)
+else if (
+  workingDays.some(
+    w =>
+      w.date === d &&
+      (w.applyToAll || userIds.some(id => w.users?.includes(id)))
+  )
+) {
+  status = "absent";
+}
+
+// 6️⃣ Normal absent
+else {
+  status = "absent";
+}
+
+
+      summaryRows.push({ date: d, status });
+      row.push(status);
+    });
+
+    const { present, half, absent } = calculateSummary(summaryRows);
+
+// ✅ Employee Working Days logic
+const employeeWorkingDays = present + Math.floor(half / 2);
+
+    const workingDayCount =
+      days.filter((d) => !isSunday(d)).length -
+      holidays.filter((h) => h.date.startsWith(month)).length;
+
+    row.push(
+  workingDayCount,
+  present,
+  half,
+  absent,
+  employeeWorkingDays
+);
+    sheetData.push(row);
+  });
+
+  // Convert to XLSX
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+
+  // Apply color coding
+  users.forEach((user, r) => {
+    const rowIndex = r + 1;
+    days.forEach((d, c) => {
+      const cellRef = XLSX.utils.encode_cell({ r: rowIndex, c: c + 1 });
+      const status = sheetData[rowIndex][c + 1];
+      if (!status) return;
+
+      const fill = getFillColor(status);
+      if (fill && ws[cellRef]) {
+        ws[cellRef].s = { fill };
+      }
+    });
+  });
+
+  return ws;
+};
+
+// Export all months (multi-sheet)
+const exportAdminAllRecords = async () => {
+  try {
     const wb = XLSX.utils.book_new();
-    const sheet = XLSX.utils.json_to_sheet(rowsMap);
-    XLSX.utils.book_append_sheet(wb, sheet, "Export");
-    return wb;
-  };
+    const monthGroups = {};
 
-  const exportAdminCurrentMonth = async () => {
-    if (!isAdminUser(role, USER)) return alert("Admin only");
-    try {
-      const monthStr = getTodayStr().slice(0, 7); // YYYY-MM
-      const currentMonthRows = adminData.filter((r) => (r.date || "").startsWith(monthStr));
-      const cmData = currentMonthRows.map((r) => ({
-        userId: r.userId,
-        userName: r.userName,
-        date: r.date,
-        status: r.status,
-        totalMinutes: r.totalMinutes ?? r.minutes ?? 0,
-        locationCount: (r.locations || []).length,
-      }));
-      const wb = buildExportWorkbook(cmData);
-      const today = new Date().toISOString().split("T")[0];
-      XLSX.writeFile(wb, `Attendance_CurrentMonth_${today}.xlsx`);
-      setShowExportPopup(false);
-    } catch (e) {
-      console.error("export current month error", e);
-      alert("Export failed");
-    }
-  };
+    adminData.forEach((r) => {
+      const month = r.date.slice(0, 7);
+      if (!monthGroups[month]) monthGroups[month] = [];
+      monthGroups[month].push(r);
+    });
 
-  const exportAdminAllRecords = async () => {
-    if (!isAdminUser(role, USER)) return alert("Admin only");
-    try {
-      const allData = adminData.map((r) => ({
-        userId: r.userId,
-        userName: r.userName,
-        date: r.date,
-        status: r.status,
-        totalMinutes: r.totalMinutes ?? r.minutes ?? 0,
-        locationCount: (r.locations || []).length,
-      }));
-      const wb = buildExportWorkbook(allData);
-      const today = new Date().toISOString().split("T")[0];
-      XLSX.writeFile(wb, `Attendance_AllRecords_${today}.xlsx`);
-      setShowExportPopup(false);
-    } catch (e) {
-      console.error("export all error", e);
-      alert("Export failed");
-    }
-  };
+    Object.keys(monthGroups).forEach((month) => {
+      const ws = buildMonthlySheet(monthGroups[month], holidayList, workingDaysList);
+      if (ws) XLSX.utils.book_append_sheet(wb, ws, month);
+    });
+
+    XLSX.writeFile(wb, "Attendance_Monthly_Export.xlsx");
+    setShowExportPopup(false);
+  } catch (err) {
+    console.error("Export error:", err);
+  }
+};
+
+// Export current month only
+const exportAdminCurrentMonth = async () => {
+  try {
+    const cm = getTodayStr().slice(0, 7);
+    const rows = adminData.filter((r) => r.date.startsWith(cm));
+
+    const wb = XLSX.utils.book_new();
+    const ws = buildMonthlySheet(rows, holidayList, workingDaysList);
+
+    if (ws) XLSX.utils.book_append_sheet(wb, ws, cm);
+
+    XLSX.writeFile(wb, `Attendance_${cm}.xlsx`);
+    setShowExportPopup(false);
+  } catch (err) {
+    console.error("Export CM error:", err);
+  }
+};
 
   // -------------------------
   // MAP HELPERS (dual instances)
@@ -575,7 +945,6 @@ const adminFiltered =
     try {
       if (!doc || !doc.locations || !L || !mapInstanceRef.current) return;
       // only for admin or sales_head
-      if (!(isAdminUser(role, USER) || role === "sales_head")) return;
 
       const map = mapInstanceRef.current;
 
@@ -802,7 +1171,17 @@ if (attendance) {
         <p><b>User:</b> {userName}</p>
 
         {!doc?.checkInTime ? (
-          <button style={btnStyle} onClick={handleCheckIn}>➕ Check In</button>
+          <button
+  style={{
+    ...btnStyle,
+    opacity: checkingIn ? 0.6 : 1,
+    cursor: checkingIn ? "not-allowed" : "pointer",
+  }}
+  onClick={handleCheckIn}
+  disabled={checkingIn}
+>
+  {checkingIn ? "📍 Checking in..." : "➕ Check In"}
+</button>
         ) : !doc?.checkOutTime ? (
           <>
             <p>Checked in: {doc.checkInTime?.toDate ? doc.checkInTime.toDate().toLocaleTimeString() : (doc._clientCheckIn ? new Date(doc._clientCheckIn).toLocaleTimeString() : "-")}</p>
@@ -882,21 +1261,18 @@ margin: isMobile ? "0" : "0 0 20px 0",
       </div>
 
       {/* MAP */}
-      {(isAdminUser(role, USER) || role === "sales_head") && (
-        <div
-          ref={todayMapRef}
-          style={{
-            height: "350px",
-            width: "100%",
-            maxWidth: isMobile ? "100%" : "100%",
-width: "100%",
-margin: isMobile ? "20px 0" : "20px 0 0 0",
-            borderRadius: "12px",
-            border: "1px solid #ddd",
-            overflow: "hidden",
-          }}
-        />
-      )}
+      <div
+  ref={todayMapRef}
+  style={{
+    height: "350px",
+    width: "100%",
+    maxWidth: isMobile ? "100%" : "100%",
+    margin: isMobile ? "20px 0" : "20px 0 0 0",
+    borderRadius: "12px",
+    border: "1px solid #ddd",
+    overflow: "hidden",
+  }}
+/>
     </div>
   );
 }
@@ -1006,18 +1382,36 @@ if (tab === "admin") {
                 {/* show either inspectRecord (admin selected) or the logged-in attendance */}
                 {inspectRecord ? (
                   <>
-                    <b>{inspectRecord.userName || inspectUserId}</b><br />
+                    <b>{getUserNameById(inspectRecord.userId, userList)}</b><br />
                     Date: {inspectRecord.date}<br />
                     Status: {inspectRecord.status}<br />
                     Minutes: {inspectRecord.totalMinutes ?? inspectRecord.minutes ?? 0}<br />
                     Locs: {(inspectRecord.locations || []).length}
-                    <div style={{ marginTop: 8 }}>
-                      {Array.isArray(inspectRecord.locations) && inspectRecord.locations.slice(0, 6).map((l, i) => (
-                        <div key={i} style={{ fontSize: 13 }}>
-                          {i + 1}. {typeof l.lat === "number" ? l.lat.toFixed(6) : l.lat}, {typeof l.lng === "number" ? l.lng.toFixed(6) : l.lng}
-                        </div>
-                      ))}
-                    </div>
+                    <div
+  style={{
+    marginTop: 8,
+    maxHeight: "200px",     // ⭐ control visible height
+    overflowY: "auto",      // ⭐ enable scrollbar
+    paddingRight: "6px",
+  }}
+>
+  {Array.isArray(inspectRecord.locations) &&
+    inspectRecord.locations.map((l, i) => (
+      <div
+        key={i}
+        style={{
+          fontSize: 13,
+          padding: "2px 0",
+          borderBottom: "1px dashed #ddd",
+        }}
+      >
+        {i + 1}.{" "}
+        {typeof l.lat === "number" ? l.lat.toFixed(6) : l.lat},{" "}
+        {typeof l.lng === "number" ? l.lng.toFixed(6) : l.lng}
+      </div>
+    ))}
+</div>
+
                   </>
                 ) : (
                   <div>No inspect record loaded.</div>
@@ -1031,6 +1425,124 @@ if (tab === "admin") {
 
     return null;
   };
+// -------------------------
+// PROMINENT LOCATION DISCLOSURE (Google Play)
+// -------------------------
+if (showLocationDisclosure) {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "#800000",
+        color: "#fff",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "Poppins, sans-serif",
+      }}
+    >
+      <div style={{ maxWidth: "520px", textAlign: "center", padding: "20px" }}>
+
+        {/* LOGO */}
+        <img
+          src={kapilLogo}
+          alt="Kapil Power CRM"
+          style={{
+            width: "96px",     // ✅ display size ONLY
+            height: "auto",
+            marginBottom: "12px",
+          }}
+        />
+
+        {/* APP NAME */}
+        <div
+          style={{
+            fontSize: "14px",
+            letterSpacing: "2px",
+            opacity: 0.9,
+            marginBottom: "24px",
+          }}
+        >
+          KAPIL POWER CRM
+        </div>
+
+        {/* TITLE */}
+        <h2 style={{ marginBottom: "16px" }}>
+          Location Permission Required
+        </h2>
+
+        {/* CONTENT */}
+        <p>Kapil Power CRM collects your location data to enable:</p>
+
+        <ul
+          style={{
+            textAlign: "left",
+            margin: "12px auto",
+            maxWidth: "360px",
+          }}
+        >
+          <li>Employee attendance tracking</li>
+          <li>Field visit verification</li>
+          <li>Work location monitoring</li>
+        </ul>
+
+        <p style={{ marginTop: "12px", fontSize: "14px" }}>
+          This includes collecting location data even when the app is closed or
+          not in use, to ensure accurate attendance and operational compliance.
+        </p>
+
+        <p style={{ marginTop: "12px", fontSize: "13px", opacity: 0.9 }}>
+          Location data is used only for internal business purposes and is not
+          shared with third parties.
+        </p>
+
+        {/* BUTTONS */}
+        <div
+          style={{
+            marginTop: "28px",
+            display: "flex",
+            justifyContent: "center",
+            gap: "14px",
+          }}
+        >
+          <button
+            style={{
+              padding: "10px 18px",
+              background: "#fff",
+              color: "#800000",
+              border: "none",
+              borderRadius: "6px",
+              fontWeight: "600",
+              cursor: "pointer",
+            }}
+            onClick={() => {
+  localStorage.setItem("locationDisclosureAccepted", "true");
+  setShowLocationDisclosure(false);
+}}
+          >
+            Allow & Continue
+          </button>
+
+          <button
+            style={{
+              padding: "10px 18px",
+              background: "transparent",
+              color: "#fff",
+              border: "1px solid #fff",
+              borderRadius: "6px",
+              cursor: "pointer",
+            }}
+            onClick={() => {
+  navigate("/apps");
+}}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
   // MAIN
   return (

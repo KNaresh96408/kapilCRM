@@ -13,6 +13,8 @@ import * as XLSX from "xlsx";
 import { onSnapshot } from "firebase/firestore";
 import ProjectDrawer from "../components/ProjectDrawer";
 import { useLocation, useNavigate } from "react-router-dom";
+import { usePermission } from "../hooks/usePermission";
+import { getScopedQuery } from "../helpers/getScopedQuery";
 
 /**
  * ProjectsDashboard.jsx
@@ -36,6 +38,8 @@ const DEFAULT_COLUMNS = [
   { key: "name", label: "Name" },
   { key: "phone", label: "Phone" },
   { key: "address", label: "Address" },
+    { key: "teleSale", label: "Tele-Sales" },
+  { key: "consultantName", label: "Consultant" },
   { key: "capacity", label: "Capacity" },
 
   { key: "sixtyPercentReceivedDate", label: "60% Received Date" },
@@ -54,6 +58,8 @@ const DEFAULT_COLUMNS = [
 
   { key: "nationalPortalStage", label: "National Portal Stage" },
   { key: "createdAt", label: "Created At" },
+    { key: "updatedAt", label: "Updated At" },
+  { key: "updatedBy", label: "Updated By" },
 ];
 
 function prettyLabel(name) {
@@ -61,8 +67,34 @@ function prettyLabel(name) {
   return name.toString().replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
+const isMobile = window.innerWidth <= 768;
+
 export default function ProjectsDashboard() {
-  const location = useLocation();
+  const perm = usePermission("projects");
+
+  if (perm.loading) {
+    return (
+      <p style={{ padding: 20, color: "#800000" }}>
+        Checking permissions...
+      </p>
+    );
+  }
+
+  if (!perm.read) {
+    return (
+      <div style={{ padding: 30, textAlign: "center", color: "#800000" }}>
+        <h2>🚫 Access Denied</h2>
+        <p>You do not have permission to view Projects.</p>
+      </div>
+    );
+  }
+
+  return <ProjectsDashboardInner perm={perm} />;
+}
+
+function ProjectsDashboardInner({ perm }) {
+  // ---------------------------------------------------
+   const location = useLocation();
 const navigate = useNavigate();
 
   const [projects, setProjects] = useState([]);
@@ -78,7 +110,12 @@ const navigate = useNavigate();
   const [columnFilters, setColumnFilters] = useState({});
 
   // columns
-  const [visibleColumns, setVisibleColumns] = useState(DEFAULT_COLUMNS.map((c) => c.key));
+  const [visibleColumns, setVisibleColumns] = useState(
+  DEFAULT_COLUMNS
+    .map((c) => c.key)
+    .filter((k) => !["updatedAt", "updatedBy"].includes(k))
+);
+
   const [pinnedColumns, setPinnedColumns] = useState([]);
   const [showManageCols, setShowManageCols] = useState(false);
 
@@ -99,6 +136,7 @@ const navigate = useNavigate();
   // ---------- DYNAMIC FIELDS SUPPORT ----------
   const [fieldsDef, setFieldsDef] = useState([]); // array of {name,label,type,required,options,default}
   const [layoutDef, setLayoutDef] = useState([]);
+  const [deletedFields, setDeletedFields] = useState({});
 
   useEffect(() => {
     let mounted = true;
@@ -116,6 +154,8 @@ const navigate = useNavigate();
           })();
           if (direct && direct.exists && direct.exists()) {
             const data = direct.data() || {};
+            const deletedFields = data.deletedFields || {};
+setDeletedFields(deletedFields);
             const defs = Array.isArray(data.fields) ? data.fields : [];
             const normalized = defs.map((f) =>
               typeof f === "string"
@@ -170,28 +210,64 @@ const navigate = useNavigate();
   const fetchProjects = async () => {
     setLoading(true);
     try {
-      const q = query(collection(db, "projects"), orderBy("createdAt", "desc"));
+     const baseRef = await getScopedQuery("projects");
+
+const q = query(
+  baseRef,
+  orderBy("createdAt", "desc")
+);
       const snap = await getDocs(q);
       let list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
       // For projects with no sixtyPercentReceivedDate, try to fetch from salesOrders
-      const needsFetch = list.filter((p) => !p.sixtyPercentReceivedDate && p.kpiId);
-      if (needsFetch.length > 0) {
-        const soSnap = await getDocs(collection(db, "salesOrders"));
-        const soDocs = soSnap.docs.map((s) => ({ id: s.id, ...s.data() }));
-        const kpiToSecondDate = {};
-        for (const s of soDocs) {
-          if (s.kpiId && s.secondPaymentDate && !(s.kpiId in kpiToSecondDate)) {
-            kpiToSecondDate[s.kpiId] = s.secondPaymentDate;
-          }
-        }
-        list = list.map((p) => {
-          if (!p.sixtyPercentReceivedDate && p.kpiId && kpiToSecondDate[p.kpiId]) {
-            return { ...p, sixtyPercentReceivedDate: kpiToSecondDate[p.kpiId] };
-          }
-          return p;
-        });
-      }
+    // For projects with missing fields, fetch from salesOrders
+const needsFetch = list.filter(
+  (p) =>
+    p.kpiId &&
+    (
+      !p.sixtyPercentReceivedDate ||
+      !p.sales_zone ||
+      !p.state ||
+      !p.sales_area ||
+      !p.zonal_manager
+    )
+);
+
+if (needsFetch.length > 0) {
+  const soSnap = await getDocs(collection(db, "salesOrders"));
+  const soDocs = soSnap.docs.map((s) => ({ id: s.id, ...s.data() }));
+
+  const soMap = {};
+  for (const s of soDocs) {
+    if (!s.kpiId) continue;
+    soMap[s.kpiId] = s;
+  }
+
+  list = list.map((p) => {
+    if (!p.kpiId || !soMap[p.kpiId]) return p;
+
+    const so = soMap[p.kpiId];
+
+    return {
+      ...p,
+
+      // ⭐ existing logic (unchanged)
+      sixtyPercentReceivedDate:
+  p.sixtyPercentReceivedDate ||
+  so.sixtyPercentReachedDate ||
+  so.secondPaymentDate ||
+  so.firstPaymentDate ||
+  null,
+      // ⭐ NEW FIELDS (only if missing — never overwrites)
+      sales_zone: p.sales_zone || so.sales_zone || "",
+      state: p.state || so.state || "",
+      sales_area: p.sales_area || so.sales_area || "",
+      zonal_manager: p.zonal_manager || so.zonal_manager || "",
+      teleSale: p.teleSale || so.teleSale || "",
+  consultantName: p.consultantName || so.consultantName || "",
+    };
+  });
+}
 
       setProjects(list);
     } catch (err) {
@@ -335,7 +411,13 @@ const filtered = projects.filter((p) => {
   }, [projects]);
 
   const defaultKeysSet = new Set(DEFAULT_COLUMNS.map((c) => c.key));
-  const hiddenInternalKeys = new Set(["id", "_systemDelete"]);
+  const hiddenInternalKeys = new Set([
+  "id",
+  "_systemDelete",
+  "createdBy",
+]);
+
+
   // REMOVE OLD FIELDS THAT SHOULD NOT SHOW IN PROJECT TABLE
 const REMOVE_OLD_PROJECT_FIELDS = new Set([
   "invoiceAmount",
@@ -344,11 +426,12 @@ const REMOVE_OLD_PROJECT_FIELDS = new Set([
   "paymentPercentage",
   "salesOrderId",
 ]);
-  const dynamicKeys = allProjectKeys.filter(
+const dynamicKeys = allProjectKeys.filter(
   (k) =>
     !defaultKeysSet.has(k) &&
     !hiddenInternalKeys.has(k) &&
-    !REMOVE_OLD_PROJECT_FIELDS.has(k)
+    !REMOVE_OLD_PROJECT_FIELDS.has(k) &&
+    !deletedFields[k]          // ⭐ THIS IS THE KEY FIX
 );
 
   const dynamicCols = dynamicKeys.map((k) => ({ key: k, label: prettyLabel(k) }));
@@ -530,10 +613,23 @@ const ColumnMenu = ({ columnKey }) => {
     return `${yyyy}-${mm}-${dd}`;
   };
 
-  return (
-    <div style={styles.container}>
+return (
+  <div
+    style={{
+      ...styles.container,
+      flexDirection: isMobile ? "column" : "row",
+      width: "100%",
+    }}
+  >
       {/* Sidebar */}
-      <div style={styles.sidebar}>
+      <div
+  style={{
+    ...styles.sidebar,
+    width: isMobile ? "100%" : "230px",
+    minWidth: isMobile ? "100%" : "230px",
+    maxWidth: isMobile ? "100%" : "230px",
+  }}
+>
         <h3 style={styles.sidebarTitle}>Filter Projects</h3>
 
         <input
@@ -634,6 +730,14 @@ const ColumnMenu = ({ columnKey }) => {
           <p style={{ color: "#800000" }}>No projects found.</p>
         ) : (
           <>
+           <div
+  style={{
+    height: "65vh",
+    overflowY: "auto",
+    overflowX: "auto",
+    WebkitOverflowScrolling: "touch"
+  }}
+>
             {/* table wrapper: horizontal scroll only here */}
             <div style={styles.tableWrapper}>
               <table style={styles.table}>
@@ -710,9 +814,9 @@ const ColumnMenu = ({ columnKey }) => {
                         }
 
                         // Date formatting for date columns
-                        if (["dispatchDate", "installationDate", "netMeterDate", "createdAt"].includes(col.key)) {
-                          val = formatDate(val);
-                        }
+                        if (["dispatchDate","installationDate","netMeterDate","createdAt","updatedAt"].includes(col.key)) {
+  val = formatDate(val);
+}
 
                         // invoiceAmount / capacity pretty formatting (if present)
                         if (col.key === "invoiceAmount") {
@@ -751,6 +855,7 @@ const ColumnMenu = ({ columnKey }) => {
                   ))}
                 </tbody>
               </table>
+            </div>
             </div>
 
             {/* Pagination */}
@@ -817,53 +922,69 @@ const ColumnMenu = ({ columnKey }) => {
 
 /* styles (keeps look consistent with your dashboards) */
 const styles = {
-  container: {
-    display: "flex",
-    height: "100vh",
-    fontFamily: "Poppins, sans-serif",
-    backgroundColor: "#fff",
-  },
-  sidebar: { width: 260, backgroundColor: "#800000", color: "#fff", padding: 20, display: "flex", flexDirection: "column", gap: 12 },
+container: {
+  display: "flex",
+  minHeight: "100vh",
+  height: "auto",              // ⭐ KEY FIX
+  fontFamily: "Poppins, sans-serif",
+  backgroundColor: "#fff",
+},
+  sidebar: {
+  backgroundColor: "#800000",
+  color: "#fff",
+  padding: 20,
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+  boxSizing: "border-box",
+},
   sidebarTitle: { fontWeight: "bold", fontSize: 18 },
   searchInput: { padding: 8, borderRadius: 6, border: "none" },
   label: { marginTop: 10, fontSize: 14, color: "#fff" },
   dropdown: { padding: 8, borderRadius: 6, border: "none" },
-  mainContent: { flex: 1, padding: 28, overflowX: "auto" },
+mainContent: {
+  flex: 1,
+  width: "100%",
+  padding: 28,
+  overflowX: "auto",
+  overflowY: "auto",          // ⭐ ADD THIS
+  WebkitOverflowScrolling: "touch",
+  boxSizing: "border-box",
+},
   headerRow: { display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 2 },
   header: { color: "#800000", fontSize: 24, fontWeight: "bold" },
   exportBtn: { background: "#fff", color: "#800000", border: "1px solid #800000", borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontWeight: 600 },
   manageBtn: { background: "#800000", color: "#fff", border: "none", borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontWeight: 600 },
   manageMenu: { position: "absolute", right: 0, top: "36px", background: "#fff", border: "1px solid rgba(128,0,0,0.2)", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", borderRadius: 6, padding: 8, zIndex: 10000, minWidth: 220 },
   manageItem: { display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", color: "#800000", fontSize: 14 },
-  tableWrapper: {
-    width: "100%",
-    overflowX: "auto",
-    borderRadius: 8,
-    position: "relative",
-    zIndex: 1,
-  },
-  table: {
-    width: "150%",
-    borderCollapse: "collapse",
-    tableLayout: "fixed",
-  }, // fixed width to enable horizontal scroll; adjust width as needed
-  th: {
-    backgroundColor: "#800000",
-    color: "#fff",
-    padding: "12px 16px",
-    textAlign: "left",
-    whiteSpace: "normal", // Let column name wrap
-    wordWrap: "break-word",
-    verticalAlign: "middle",
-  },
-  td: {
-    padding: "12px 16px",
-    fontSize: 14,
-    color: "#333",
-    whiteSpace: "nowrap", // data stays single line
-    textOverflow: "ellipsis",
-    overflow: "hidden",
-  },
+tableWrapper: {
+  width: "100%",
+  overflowX: "auto",
+  overflowY: "visible",
+  WebkitOverflowScrolling: "touch",
+},
+table: {
+  width: "max-content",   // ⭐ IMPORTANT
+  minWidth: "100%",
+  borderCollapse: "collapse",
+},// fixed width to enable horizontal scroll; adjust width as needed
+th: {
+  backgroundColor: "#800000",
+  color: "#fff",
+  padding: "12px 10px",
+  position: "sticky",
+  top: 0,
+  zIndex: 10,
+  whiteSpace: "nowrap",
+},
+td: {
+  padding: "12px 10px",
+  fontSize: 14,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  minWidth: 140,        // ⭐ prevents overlap
+},
   tr: { borderBottom: "1px solid #eee", cursor: "pointer" },
   headerCell: { display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative" },
   iconButton: { background: "transparent", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: 14, cursor: "pointer", padding: "4px 6px", borderRadius: 6 },
@@ -872,7 +993,14 @@ const styles = {
   filterGroup: { display: "flex", flexDirection: "column", gap: 4, padding: "6px 8px" },
   filterLabel: { fontSize: 12, color: "#800000", opacity: 0.8 },
   filterInput: { border: "1px solid rgba(128,0,0,0.3)", borderRadius: 4, padding: 4, fontSize: 13, color: "#800000" },
-  pagination: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18, color: "#800000" },
+  pagination: {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginTop: 18,
+  paddingBottom: 16,        // ⭐ ensures visible on mobile
+  color: "#800000",
+},
   pageBtn: { background: "#fff", border: "1px solid #800000", color: "#800000", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontWeight: 600 },
 
   /* Export dialog */

@@ -8,27 +8,41 @@ export default function ModulePermission({ moduleName }) {
   const [saving, setSaving] = useState(false);
 
   // Load users + permissions
-  useEffect(() => {
-    const loadData = async () => {
-      // Load Users
-      const snap = await getDocs(collection(db, "Users"));
-      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setUsers(list);
+// Load users + permissions (FAST LOAD)
+useEffect(() => {
+  const loadData = async () => {
 
-      // Load existing permissions
-      const permCol = collection(db, "modulePermissions", moduleName, "users");
-      const permSnap = await getDocs(permCol);
+    // 1️⃣ LOAD CACHED PERMISSIONS INSTANTLY
+    const cached = localStorage.getItem(`modulePerm_${moduleName}`);
+    if (cached) {
+      setPermissions(JSON.parse(cached));
+    }
 
-      let stored = {};
-      permSnap.docs.forEach((d) => {
-        stored[d.id] = d.data();
-      });
+    // 2️⃣ LOAD USERS
+    const snap = await getDocs(collection(db, "Users"));
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    setUsers(list);
 
-      setPermissions(stored);
-    };
+    // 3️⃣ LOAD PERMISSIONS FROM FIRESTORE (BACKGROUND)
+    const permCol = collection(db, "modulePermissions", moduleName, "users");
+    const permSnap = await getDocs(permCol);
 
-    loadData();
-  }, [moduleName]);
+    let stored = {};
+    permSnap.docs.forEach((d) => {
+      stored[d.id] = d.data();
+    });
+
+    setPermissions(stored);
+
+    // 4️⃣ UPDATE CACHE
+    localStorage.setItem(
+      `modulePerm_${moduleName}`,
+      JSON.stringify(stored)
+    );
+  };
+
+  loadData();
+}, [moduleName]);
 
   // Toggle checkbox
   const toggle = (uid, key) => {

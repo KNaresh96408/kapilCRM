@@ -1,4 +1,9 @@
 /* ----------------------------------------------------------
+   GOOGLE FONT — INTER (SINGLE SOURCE)
+---------------------------------------------------------- */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+
+/* ----------------------------------------------------------
    GLOBAL RESET
 ---------------------------------------------------------- */
 * {
@@ -8,39 +13,40 @@
 }
 
 /* ----------------------------------------------------------
-   ROOT + BODY
+   ROOT + BODY (SINGLE AUTHORITY — VERY IMPORTANT)
 ---------------------------------------------------------- */
-html, body, #root {
+html,
+body,
+#root {
   width: 100%;
-  height: 100%;
-  font-family: "Poppins", system-ui, sans-serif;
+  min-height: 100%;
   background: #ffffff;
-  overflow: hidden; /* Prevent double scroll */
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* ✅ SCROLL BEHAVIOR */
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
-/* Remove Vite default styling */
-:root {
-  line-height: 1.5;
-  font-weight: 400;
-  color: #213547;
-  background: #ffffff;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+/* 🔥 ANDROID WEBVIEW FINAL WIDTH FIX */
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 
 /* ----------------------------------------------------------
-   FULL LAYOUT FIX — App uses full width
+   ROOT CONTAINER — VITE / REACT FIX
 ---------------------------------------------------------- */
 #root {
-  max-width: 100% !important;
-  padding: 0 !important;
-  text-align: left !important;
+  max-width: 100%;
+  padding: 0;
+  text-align: left;
 }
 
 /* ----------------------------------------------------------
-   UNIVERSAL SCROLL AREA (for Android/iOS + Web)
+   UNIVERSAL SCROLL AREA
 ---------------------------------------------------------- */
 .main-scroll {
   height: 100%;
@@ -49,7 +55,7 @@ html, body, #root {
 }
 
 /* ----------------------------------------------------------
-   TABLES — Responsive
+   TABLES — RESPONSIVE SAFE
 ---------------------------------------------------------- */
 .table-wrapper {
   width: 100%;
@@ -68,7 +74,7 @@ td {
 }
 
 /* ----------------------------------------------------------
-   SIDEBAR — Full height on desktop
+   SIDEBAR
 ---------------------------------------------------------- */
 .sidebar {
   height: 100vh;
@@ -108,16 +114,9 @@ button:focus-visible {
    MOBILE RESPONSIVENESS
 ---------------------------------------------------------- */
 @media (max-width: 768px) {
-
-  /* Allow full page scrolling on mobile */
-  #root {
-    overflow-y: auto !important;
-    -webkit-overflow-scrolling: touch;
-  }
-
   .sidebar {
-    width: 100% !important;
-    height: auto !important;
+    width: 100%;
+    height: auto;
     position: relative;
   }
 
@@ -131,13 +130,67 @@ button:focus-visible {
     font-size: 13px;
   }
 
-  /* ⭐ Mobile scroll for the monthly attendance calendar */
+  h2 {
+    font-size: 18px;
+  }
+
+  h3 {
+    font-size: 16px;
+  }
+
+  /* ⭐ Mobile scroll for attendance calendar */
   .attendance-month-calendar-container {
-    max-height: 70vh;                 /* visible height on mobile */
-    overflow-y: auto;                 /* enables scrolling */
+    max-height: 70vh;
+    overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding-bottom: 16px;
   }
-
 }
 
+/* ----------------------------------------------------------
+   ANALYTICS DASHBOARD
+---------------------------------------------------------- */
+.dashSelect {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #ddd;
+  background: white;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .dashSelect {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+}
+
+/* ----------------------------------------------------------
+   LINKS
+---------------------------------------------------------- */
+a {
+  font-weight: 500;
+  color: #646cff;
+  text-decoration: inherit;
+}
+
+a:hover {
+  color: #535bf2;
+}
+
+/* ----------------------------------------------------------
+   LIGHT MODE SAFETY
+---------------------------------------------------------- */
+@media (prefers-color-scheme: light) {
+  html,
+  body {
+    color: #213547;
+    background-color: #ffffff;
+  }
+
+  button {
+    background-color: #f9f9f9;
+  }
+}

@@ -91,6 +91,19 @@ const QuotationDrawer = ({ open, onClose, deal, onSave }) => {
       kpiId: deal.autoId || deal.kpiId || dealId,
       projectType: deal.projectType || "Residential",
 
+        teleSale:
+  deal.teleSale ||
+  deal.tele_sale ||
+  deal.telecaller ||
+  "",
+
+consultantName:
+  deal.consultantName ||
+  deal.assignedConsultant ||
+  deal.assignedConsultantName ||
+  "",
+
+
       // form fields (no undefined)
       customerName: form.customerName || "",
       customerPhone: form.customerPhone || "",

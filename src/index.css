@@ -1,5 +1,9 @@
+/* ✅ Inter Font (FREE – Google Fonts) */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color: #213547;
@@ -7,7 +11,6 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-
 
 a {
   font-weight: 500;
@@ -22,14 +25,20 @@ body {
   margin: 0 !important;
   padding: 0 !important;
   width: 100% !important;
-  height: 100vh !important;
-  overflow: hidden !important; /* remove all scrollbars */
+  min-height: 100vh !important;
+  height: auto !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
   background: #ffffff !important;
+
+  /* 🔥 Ensure Inter is applied everywhere */
+  font-family: "Inter", system-ui, Avenir, Helvetica, Arial, sans-serif;
 }
 
 h1 {
   font-size: 3.2em;
   line-height: 1.1;
+  font-weight: 600;
 }
 
 button {

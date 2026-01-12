@@ -12,7 +12,20 @@ import {
   query,
   where,
   setDoc,
+  arrayUnion
 } from "firebase/firestore";
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL
+} from "firebase/storage";
+import { arrayRemove } from "firebase/firestore";
+import { deleteObject } from "firebase/storage";
+import { deleteDoc } from "firebase/firestore";
+import { usePermission } from "../hooks/usePermission";
+
+
 
 /* ============================================================
    NOTE: This file keeps your existing logic untouched.
@@ -23,13 +36,43 @@ import {
    - merges dynamic fields into update payload when saving
    ============================================================ */
 
-const SalesOrderDrawer = ({ so, onClose }) => {
+export default function SalesOrderDrawer(props) {
+
+  const perm = usePermission("sales-orders");
+
+  if (perm.loading) {
+    return (
+      <div style={{ padding:40, textAlign:"center", color:"#800000" }}>
+        Checking permissions…
+      </div>
+    );
+  }
+
+  if (!perm.update) {
+    return (
+      <div style={{ padding:40, textAlign:"center", color:"#800000" }}>
+        <h2>🚫 Access Denied</h2>
+        <p>You do not have permission to update Sales Orders.</p>
+        <button onClick={props.onClose}>Close</button>
+      </div>
+    );
+  }
+
+  return <SalesOrderDrawerInner perm={perm} {...props} />;
+}
+
+
+function SalesOrderDrawerInner({ perm, so, onClose }) {
+
   const [form, setForm] = useState({ ...so });
   const [saving, setSaving] = useState(false);
+  const [attachments, setAttachments] = useState(so.attachments || []);
+  const [uploading, setUploading] = useState(false);
+  const [fileType, setFileType] = useState("payment-proof");
   const [isAdmin, setIsAdmin] = useState(false);
 
-  // Dynamic fields defs loaded from crm_fields/salesOrders
   const [fieldsDef, setFieldsDef] = useState([]);
+
 
   useEffect(() => {
     const storedUser = JSON.parse(localStorage.getItem("kp-user") || "{}");
@@ -102,6 +145,10 @@ const SalesOrderDrawer = ({ so, onClose }) => {
 
     return () => (active = false);
   }, []);
+  const currentUser =
+  typeof window !== "undefined"
+    ? JSON.parse(localStorage.getItem("kp-user") || "{}")
+    : {};
 
   // payments
   const p1 = Number(form.firstPayment || 0);
@@ -115,9 +162,9 @@ const SalesOrderDrawer = ({ so, onClose }) => {
   const percentage = invoiceAmount ? (totalReceived / invoiceAmount) * 100 : 0;
 
   const handleChange = (field, value) => {
-    if (!isAdmin) return;
-    setForm((prev) => ({ ...prev, [field]: value }));
-  };
+  if (!perm.update) return;
+  setForm((prev) => ({ ...prev, [field]: value }));
+};
 
   // Project utilities
   const projectExists = async (kpiId) => {
@@ -149,9 +196,88 @@ const SalesOrderDrawer = ({ so, onClose }) => {
     return true;
   };
 
+  const handleFileUpload = async (file) => {
+  if (!file) return;
+
+if (file.size > 300 * 1024 * 1024) {
+  alert("Max file size is 300MB");
+  return;
+}
+
+  setUploading(true);
+
+  try {
+    const storage = getStorage();
+    const storagePath = `salesOrders/${form.kpiId}/${fileType}/${Date.now()}_${file.name}`;
+    const storageRef = ref(storage, storagePath);
+
+    await uploadBytes(storageRef, file);
+    const url = await getDownloadURL(storageRef);
+
+    const attachmentObj = {
+      name: file.name,
+      type: fileType,
+      url,
+      uploadedAt: new Date(),
+    };
+
+    await updateDoc(doc(db, "salesOrders", form.id), {
+      attachments: arrayUnion(attachmentObj),
+    });
+
+    setAttachments((prev) => [...prev, attachmentObj]);
+  } catch (e) {
+    console.error(e);
+    alert("Upload failed");
+  } finally {
+    setUploading(false);
+  }
+};
+const handleDeleteAttachment = async (att) => {
+  if (!isAdmin) return alert("Only admin can delete files.");
+  if (!window.confirm("Delete this file?")) return;
+
+  try {
+    setUploading(true);
+
+    const storage = getStorage();
+    const fileRef = ref(storage, att.url);
+
+    await deleteObject(fileRef);
+
+    await updateDoc(doc(db, "salesOrders", form.id), {
+      attachments: arrayRemove(att),
+    });
+
+    setAttachments(prev => prev.filter(a => a.url !== att.url));
+
+    alert("Deleted successfully");
+  } catch (e) {
+    console.error(e);
+    alert("Delete failed");
+  } finally {
+    setUploading(false);
+  }
+};
+
+const handleDeleteRecord = async () => {
+  if (!isAdmin) return alert("Only admin can delete Sales Orders.");
+  if (!window.confirm("Are you sure? This cannot be undone.")) return;
+
+  try {
+    await deleteDoc(doc(db, "salesOrders", form.id));
+
+    alert("Sales Order deleted successfully");
+    onClose();       // closes drawer + refresh happens automatically
+  } catch (err) {
+    console.error(err);
+    alert("Delete failed");
+  }
+};
+
   // Save sales order and auto-convert logic (60% but only if project doesn't exist)
   const saveSalesOrder = async () => {
-    if (!isAdmin) return alert("Only admin can update");
+    if (!perm.update) return alert("You do not have permission to update");
 
     setSaving(true);
     try {
@@ -162,6 +288,8 @@ const SalesOrderDrawer = ({ so, onClose }) => {
       let updateData = {
         name: form.name,
         phone: form.phone,
+        teleSale: form.teleSale,
+        consultantName: form.consultantName,
         address: form.address,
         capacity: form.capacity,
         invoiceAmount,
@@ -173,6 +301,11 @@ const SalesOrderDrawer = ({ so, onClose }) => {
         pendingPayment: pending,
         paymentPercentage: percentage,
         updatedAt: today,
+          // ✅ FIXED
+  updatedBy:
+    currentUser.displayName ||
+    currentUser.email ||
+    "",
       };
 
       const setDate = (oldVal, newVal, oldDate) => {
@@ -187,6 +320,69 @@ const SalesOrderDrawer = ({ so, onClose }) => {
       updateData.secondPaymentDate = setDate(old.secondPayment, p2, old.secondPaymentDate);
       updateData.thirdPaymentDate = setDate(old.thirdPayment, p3, old.thirdPaymentDate);
       updateData.fourthPaymentDate = setDate(old.fourthPayment, p4, old.fourthPaymentDate);
+      // 🔥 60% reached DATE logic (WORKS for 1st / 2nd / any payment)
+const paymentPercent = invoiceAmount
+  ? (totalReceived / invoiceAmount) * 100
+  : 0;
+
+if (paymentPercent >= 60 && !old.sixtyPercentReachedDate) {
+  // find WHICH payment crossed 60%
+  const paymentDate =
+    updateData.fourthPaymentDate ||
+    updateData.thirdPaymentDate ||
+    updateData.secondPaymentDate ||
+    updateData.firstPaymentDate ||
+    today;
+
+  updateData.sixtyPercentReachedDate = paymentDate;
+}
+
+
+      // ---------------------------------------------------
+// 60% PAYMENT LOGIC (Stores YES/NO + Delay Days)
+// ---------------------------------------------------
+const sixtyTarget = invoiceAmount * 0.6;
+
+// 1️⃣ YES / NO STATUS
+const sixtyPercentReceived = totalReceived >= sixtyTarget ? "YES" : "NO";
+
+// 2️⃣ DELAY DAYS LOGIC
+let sixtyPercentDelayDays = null;
+
+// token date = 1st payment date (your base reference)
+const tokenDate = updateData.firstPaymentDate || old.firstPaymentDate;
+
+if (tokenDate) {
+  const tokenMs =
+    tokenDate?.seconds
+      ? tokenDate.seconds * 1000
+      : new Date(tokenDate).getTime();
+
+  let endDateMs;
+
+  if (sixtyPercentReceived === "YES") {
+    const sixtyDate =
+      old?.sixtyPercentReceivedDate ||
+      updateData?.sixtyPercentReceivedDate ||
+      new Date();
+
+    endDateMs = sixtyDate?.seconds
+      ? sixtyDate.seconds * 1000
+      : new Date(sixtyDate).getTime();
+  } else {
+    endDateMs = Date.now();
+  }
+
+  const days = Math.floor(
+    (endDateMs - tokenMs) / (1000 * 60 * 60 * 24)
+  );
+  sixtyPercentDelayDays = days >= 0 ? days : 0;
+}
+
+// push to firestore
+updateData.sixtyPercentReceived = sixtyPercentReceived;
+updateData.sixtyPercentDelayDays = sixtyPercentDelayDays;
+
 
       // Merge dynamic fields into updateData
       fieldsDef.forEach((fd) => {
@@ -197,17 +393,35 @@ const SalesOrderDrawer = ({ so, onClose }) => {
         }
       });
 
-      // AUTO CONVERT IF >= 60% AND project not exists (and not previously recorded)
-      const sixty = invoiceAmount * 0.6;
-      if (totalReceived >= sixty && !old.sixtyPercentReceivedDate) {
-        updateData.sixtyPercentReceivedDate = today;
-        updateData.convertedToProject = true;
 
-        const created = await createProject(so, totalReceived, pending, percentage);
-        if (!created) {
-          console.log("Project already exists — skipping auto-create.");
-        }
-      }
+// 1️⃣ FIRST save Sales Order
+await updateDoc(ref, updateData);
+
+// 2️⃣ THEN check conversion
+const sixty = invoiceAmount * 0.6;
+const isAbove60 = totalReceived >= sixty;
+const projectAlreadyExists = await projectExists(so.kpiId);
+
+if (isAbove60 && !projectAlreadyExists) {
+
+  // set 60% received date ONLY once
+  if (!old.sixtyPercentReceivedDate) {
+    await updateDoc(ref, {
+      sixtyPercentReceivedDate: today,
+      convertedToProject: true
+    });
+  }
+
+  await createProject(
+    so,
+    totalReceived,
+    pending,
+    percentage
+  );
+
+  console.log("✔ Auto converted to Project (>=60%)");
+}
+
 
       await updateDoc(ref, updateData);
 
@@ -449,15 +663,15 @@ const gst = computeGstBreakdown(amount, capacity);
 
     switch (t) {
       case "textarea":
-        return <textarea value={val} onChange={(e) => handleChange(fd.name, e.target.value)} rows={3} style={{ ...commonStyle, minHeight: 80 }} disabled={!isAdmin} />;
+        return <textarea value={val} onChange={(e) => handleChange(fd.name, e.target.value)} rows={3} style={{ ...commonStyle, minHeight: 80 }} disabled={!perm.update} />;
       case "date":
-        return <input type="date" value={val ? String(val).split("T")[0] : ""} onChange={(e) => handleChange(fd.name, e.target.value)} style={commonStyle} disabled={!isAdmin} />;
+        return <input type="date" value={val ? String(val).split("T")[0] : ""} onChange={(e) => handleChange(fd.name, e.target.value)} style={commonStyle} disabled={!perm.update} />;
       case "checkbox":
-        return <input type="checkbox" checked={!!val} onChange={(e) => handleChange(fd.name, e.target.checked)} disabled={!isAdmin} />;
+        return <input type="checkbox" checked={!!val} onChange={(e) => handleChange(fd.name, e.target.checked)} disabled={!perm.update} />;
       case "select":
       case "picklist":
         return (
-          <select value={val ?? ""} onChange={(e) => handleChange(fd.name, e.target.value)} style={commonStyle} disabled={!isAdmin}>
+          <select value={val ?? ""} onChange={(e) => handleChange(fd.name, e.target.value)} style={commonStyle} disabled={!perm.update}>
             <option value="">Select</option>
             {fd.options?.map((o) => (
               <option key={o} value={o}>
@@ -481,38 +695,60 @@ const gst = computeGstBreakdown(amount, capacity);
               )
             }
             style={commonStyle}
-            disabled={!isAdmin}
+            disabled={!perm.update}
           />
         );
       default:
-        return <input value={val} onChange={(e) => handleChange(fd.name, e.target.value)} style={commonStyle} disabled={!isAdmin} />;
+        return <input value={val} onChange={(e) => handleChange(fd.name, e.target.value)} style={commonStyle} disabled={!perm.update} />;
     }
   };
 
   return (
-    <div style={{ position: "fixed", right: 0, top: 0, width: "460px", height: "100vh", background: "#fff", boxShadow: "-4px 0 12px rgba(0,0,0,0.2)", padding: 20, overflowY: "auto", zIndex: 999999 }}>
+<div
+  style={{
+    position: "fixed",
+    right: 0,
+    top: 0,
+    width: window.innerWidth <= 768 ? "100%" : "460px",
+    height: "100vh",
+    background: "#fff",
+    boxShadow: "-4px 0 12px rgba(0,0,0,0.2)",
+      padding: 5,
+    overflowY: "auto",
+    overscrollBehavior: "contain",
+    overflowX: "auto",               // ⭐ ADD THIS
+    WebkitOverflowScrolling: "touch",// ⭐ ADD THIS
+    zIndex: 999999,
+  }}
+>
       <h2 style={{ color: "#800000" }}>Sales Order Details</h2>
 
-      <button onClick={onClose} style={{ position: "absolute", right: 20, top: 20, padding: "6px 10px", border: "1px solid #800000", color: "#800000", background: "transparent", borderRadius: 6 }}>
+      <button onClick={onClose} style={{ position: "absolute", right: 20, top: 20, padding: "6px 10px", border: "1px solid #800000", color: "#800000", background: "#fff", borderRadius: 6 }}>
         Close
       </button>
 
       <p style={{ fontWeight: 700 }}>KPI ID: {form.kpiId}</p>
 
       <label style={label}>Customer Name</label>
-      <input style={input} value={form.name} onChange={(e) => handleChange("name", e.target.value)} disabled={!isAdmin} />
+      <input style={input} value={form.name} onChange={(e) => handleChange("name", e.target.value)} disabled={!perm.update} />
 
       <label style={label}>Phone</label>
-      <input style={input} value={form.phone} onChange={(e) => handleChange("phone", e.target.value)} disabled={!isAdmin} />
+      <input style={input} value={form.phone} onChange={(e) => handleChange("phone", e.target.value)} disabled={!perm.update} />
+
+      <label style={label}>Tele-Sales</label>
+      <input style={input} value={form.teleSale} onChange={(e) => handleChange("teleSale", e.target.value)} disabled={!perm.update} />
+
+      <label style={label}>Consultant Name</label>
+      <input style={input} value={form.consultantName} onChange={(e) => handleChange("consultantName", e.target.value)} disabled={!perm.update} />
 
       <label style={label}>Address</label>
-      <input style={input} value={form.address} onChange={(e) => handleChange("address", e.target.value)} disabled={!isAdmin} />
+      <input style={input} value={form.address} onChange={(e) => handleChange("address", e.target.value)} disabled={!perm.update} />
 
       <label style={label}>Capacity (kW)</label>
-      <input style={input} type="number" value={form.capacity} onChange={(e) => handleChange("capacity", e.target.value)} disabled={!isAdmin} />
+      <input style={input} type="number" value={form.capacity} onChange={(e) => handleChange("capacity", e.target.value)} disabled={!perm.update} />
 
       <label style={label}>Invoice Amount</label>
-      <input style={input} type="number" value={form.invoiceAmount} onChange={(e) => handleChange("invoiceAmount", e.target.value)} disabled={!isAdmin} />
+      <input style={input} type="number" value={form.invoiceAmount} onChange={(e) => handleChange("invoiceAmount", e.target.value)} disabled={!perm.update} />
 
       <h3 style={{ marginTop: 20 }}>Payments</h3>
       {[
@@ -523,7 +759,7 @@ const gst = computeGstBreakdown(amount, capacity);
       ].map(([labelText, field, dateField]) => (
         <div key={field}>
           <label style={label}>{labelText}</label>
-          <input style={input} type="number" value={form[field]} onChange={(e) => handleChange(field, e.target.value)} disabled={!isAdmin} />
+          <input style={input} type="number" value={form[field]} onChange={(e) => handleChange(field, e.target.value)} disabled={!perm.update} />
           {form[dateField] && <p style={dateText}>Date: {new Date(form[dateField]?.seconds * 1000).toLocaleDateString("en-GB")}</p>}
         </div>
       ))}
@@ -550,7 +786,7 @@ const gst = computeGstBreakdown(amount, capacity);
       )}
 
       {/* Convert to Project (keeps your existing behavior) */}
-      {isAdmin && (
+      {perm.update && (
         <button
           onClick={async () => {
             if (await projectExists(form.kpiId)) return alert("Project already exists for this KPI.");
@@ -565,7 +801,7 @@ const gst = computeGstBreakdown(amount, capacity);
       )}
 
       {/* Create Invoice button (under Convert to Project) */}
-      {isAdmin && (
+      {perm.update && (
         <button
           onClick={() => createInvoicePdf(form)}
           style={{ marginTop: 12, width: "100%", padding: 12, background: "#800000", color: "#fff", border: "none", borderRadius: 6, fontWeight: "bold" }}
@@ -577,25 +813,74 @@ const gst = computeGstBreakdown(amount, capacity);
       {/* Save */}
      {/* Spacer so content doesn't hide behind fixed buttons */}
 <div style={{ height: "140px" }}></div>
+{/* ATTACHMENTS SECTION */}
+<div style={{ marginTop: 30 }}>
+  <h3 style={{ color: "#800000" }}>Attachments</h3>
+
+  {attachments.length === 0 ? (
+    <p style={{ color: "#999" }}>No files uploaded</p>
+  ) : (
+<ul>
+  {attachments.map((a, i) => (
+    <li key={i} style={{ marginBottom: 6 }}>
+      <a href={a.url} target="_blank" rel="noreferrer">
+        {a.name}
+      </a>
+      <small> ({a.type})</small>
+
+      {isAdmin &&  (
+        <button
+          onClick={() => handleDeleteAttachment(a)}
+          style={{
+            marginLeft: 10,
+            color: "white",
+            background: "red",
+            border: "none",
+            padding: "4px 8px",
+            borderRadius: 4,
+            cursor: "pointer"
+          }}
+        >
+          Delete
+        </button>
+      )}
+    </li>
+  ))}
+</ul>
+  )}
+
+  <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
+    <select
+      value={fileType}
+      onChange={(e) => setFileType(e.target.value)}
+    >
+      <option value="payment-proof">Payment Proof</option>
+      <option value="loan-documents">Loan Documents</option>
+      <option value="design">Design</option>
+      <option value="site-survey-report">Site Survey Report</option>
+    </select>
+
+    <input
+      type="file"
+      disabled={uploading}
+      onChange={(e) => handleFileUpload(e.target.files[0])}
+    />
+  </div>
+
+  {uploading && <p>Uploading...</p>}
+</div>
 
 {/* FIXED BOTTOM BUTTON BAR */}
 <div
   style={{
-    position: "fixed",
-    bottom: 0,
-    right: 0,
-    width: "460px",
-    background: "#fff",
-    padding: "15px 20px",
-    borderTop: "1px solid #ccc",
+    borderTop: "1px solid #eee",
+    padding: 12,
     display: "flex",
-    justifyContent: "space-between",
-    gap: "10px",
-    zIndex: 9999999,
+    gap: 10,
+    marginTop: 20,
   }}
 >
-  {/* SAVE BUTTON */}
-  {isAdmin && (
+  {perm.update && (
     <button
       onClick={saveSalesOrder}
       disabled={saving}
@@ -604,28 +889,41 @@ const gst = computeGstBreakdown(amount, capacity);
         background: "#800000",
         color: "#fff",
         padding: "12px 0",
-        border: "none",
         borderRadius: "8px",
+        border: "none",
         fontWeight: "bold",
-        cursor: "pointer",
       }}
     >
       {saving ? "Saving..." : "Save"}
     </button>
   )}
+  {isAdmin && (
+  <button
+    onClick={handleDeleteRecord}
+    style={{
+      background: "red",
+      color: "white",
+      padding: "8px 15px",
+      borderRadius: 6,
+      border: "none",
+      marginRight: 10,
+      cursor: "pointer"
+    }}
+  >
+    Delete Sales Order
+  </button>
+)}
 
-  {/* CANCEL BUTTON */}
   <button
     onClick={onClose}
     style={{
       flex: 1,
       background: "#fff",
       color: "#800000",
+      border: "2px solid #800000",
       padding: "12px 0",
       borderRadius: "8px",
-      border: "2px solid #800000",
-      fontWeight: "bold",
-      cursor: "pointer",
+      fontWeight: 700,
     }}
   >
     Cancel
@@ -635,7 +933,6 @@ const gst = computeGstBreakdown(amount, capacity);
   );
 };
 
-export default SalesOrderDrawer;
 
 // small helper for pretty label (same pattern used elsewhere)
 function prettyLabel(name) {

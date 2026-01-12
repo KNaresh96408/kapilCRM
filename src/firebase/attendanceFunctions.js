@@ -132,17 +132,20 @@ export async function createOrEnsureDoc(uid, userName, dateStr) {
 export async function checkIn({ uid, userName, dateStr, coords, clientIso }) {
   const ref = doc(db, "attendance", `${uid}_${dateStr}`);
 
-  await setDoc(
-    ref,
-    {
-      checkInTime: serverTimestamp(),
-      _clientCheckIn: clientIso || new Date().toISOString(),
-      checkInLocation: coords || null,
-      status: "present",
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+await setDoc(
+  ref,
+  {
+    userId: uid,
+    userName: userName || "",
+    date: dateStr,
+    checkInTime: serverTimestamp(),
+    _clientCheckIn: clientIso || new Date().toISOString(),
+    checkInLocation: coords || null,
+    status: "present",
+    updatedAt: serverTimestamp(),
+  },
+  { merge: true }
+);
 }
 
 // -------------------------------------------------------
@@ -155,14 +158,16 @@ export async function pollAddLocation({ uid, dateStr, coords }) {
 
   const updated = [...(data.locations || []), coords];
 
-  await setDoc(
-    ref,
-    {
-      locations: updated,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+await setDoc(
+  ref,
+  {
+    userId: uid,
+    userName: data.userName || "",
+    locations: updated,
+    updatedAt: serverTimestamp(),
+  },
+  { merge: true }
+);
 }
 
 // -------------------------------------------------------
@@ -199,16 +204,18 @@ export async function checkOut({ uid, dateStr, clientCheckOutDate }) {
     console.warn("checkOut calc error", e);
   }
 
-  await setDoc(
-    ref,
-    {
-      checkOutTime: serverTimestamp(),
-      totalMinutes,
-      status: totalMinutes < 240 ? "half-day" : "present",
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+await setDoc(
+  ref,
+  {
+    userId: uid,
+    userName: data.userName || "",
+    checkOutTime: serverTimestamp(),
+    totalMinutes,
+    status: totalMinutes < 240 ? "half-day" : "present",
+    updatedAt: serverTimestamp(),
+  },
+  { merge: true }
+);
 
   return { status: data.status, totalMinutes };
 }

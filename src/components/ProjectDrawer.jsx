@@ -8,7 +8,10 @@ import {
   serverTimestamp,
   getDocs,
   collection,
+  deleteDoc,
 } from "firebase/firestore";
+import { usePermission } from "../hooks/usePermission";
+
 
 /**
  * ProjectDrawer.jsx
@@ -26,21 +29,46 @@ function prettyLabel(name) {
   return name.toString().replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
-const ProjectDrawer = ({ project, onClose, refresh }) => {
+export default function ProjectDrawer(props) {
+  const perm = usePermission("projects");
+
+  // Loading UI
+  if (perm.loading) {
+    return (
+      <div style={{ padding: 40, color: "#800000", textAlign: "center" }}>
+        Checking permissions…
+      </div>
+    );
+  }
+
+  // No READ access — cannot even open project
+  if (!perm.read) {
+    return (
+      <div style={{ padding: 40, color: "#800000", textAlign: "center" }}>
+        <h2>🚫 Access Denied</h2>
+        <p>You do not have permission to view Projects.</p>
+        <button onClick={props.onClose}>Close</button>
+      </div>
+    );
+  }
+
+  return <ProjectDrawerInner {...props} perm={perm} />;
+}
+
+function ProjectDrawerInner({ project, onClose, refresh, perm }) {
+
+  const canEdit = perm.update;    // whoever has UPDATE can edit+save
+  const isAdmin = perm.delete;    // delete used as super admin if needed
+
   const [form, setForm] = useState({ ...project });
   const [saving, setSaving] = useState(false);
 
   // -------------------------
-  // ADMIN CHECK
-  // -------------------------
-  const user = JSON.parse(localStorage.getItem("kp-user") || "{}");
-  const isAdmin = user?.role === "admin";
-
-  // -------------------------
   // Dynamic fields
   // -------------------------
-  const [fieldsDef, setFieldsDef] = useState([]); // normalized defs
+  const [fieldsDef, setFieldsDef] = useState([]);
   const [layoutDef, setLayoutDef] = useState([]);
+
 
   useEffect(() => {
     let mounted = true;
@@ -101,11 +129,16 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
     });
   }, [project, fieldsDef.length]);
 
+  const currentUser =
+  typeof window !== "undefined"
+    ? JSON.parse(localStorage.getItem("kp-user") || "{}")
+    : {};
+
   // -------------------------
   // Handle Input Change
   // -------------------------
   const handleChange = (field, value) => {
-    if (!isAdmin) return; // block edits
+    if (!canEdit) return;// block edits
     setForm((prev) => ({
       ...prev,
       [field]: value,
@@ -140,16 +173,33 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
   const installationDelay = computeDelay(installationDate, dispatchDate);
   const netMeterDelay = computeDelay(netMeterDate, today);
 
+  const handleDeleteProject = async () => {
+  if (!isAdmin) return alert("Only admin can delete projects.");
+  if (!window.confirm("Are you sure? This cannot be undone.")) return;
+
+  try {
+    await deleteDoc(doc(db, "projects", project.id));
+    alert("Project deleted successfully");
+
+    if (refresh) refresh();
+    onClose();
+  } catch (err) {
+    console.error(err);
+    alert("Delete failed");
+  }
+};
+
   // -------------------------
   // Save Project
   // -------------------------
   const saveProject = async () => {
-    if (!isAdmin) {
-      alert("Only Admin can update projects.");
-      return;
-    }
+    if (!perm.update) {
+  alert("You do not have permission to update this project.");
+  return;
+}
 
     setSaving(true);
+
     try {
       const ref = doc(db, "projects", project.id);
       const updateData = {
@@ -177,6 +227,10 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         netMeterDelay,
 
         updatedAt: serverTimestamp(),
+        updatedBy:
+    currentUser.displayName ||
+    currentUser.email ||
+    "",
       };
 
       // add dynamic fields
@@ -250,7 +304,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
             onChange={(e) => handleChange(fd.name, e.target.value)}
             rows={3}
             style={{ ...commonStyle, minHeight: 80 }}
-            disabled={!isAdmin}
+            disabled={!canEdit}
           />
         );
 
@@ -265,7 +319,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
               handleChange(fd.name, e.target.value ? new Date(e.target.value) : null)
             }
             style={commonStyle}
-            disabled={!isAdmin}
+            disabled={!canEdit}
           />
         );
 
@@ -275,7 +329,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
             type="checkbox"
             checked={!!val}
             onChange={(e) => handleChange(fd.name, e.target.checked)}
-            disabled={!isAdmin}
+            disabled={!canEdit}
           />
         );
 
@@ -286,7 +340,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
             value={val ?? ""}
             onChange={(e) => handleChange(fd.name, e.target.value)}
             style={commonStyle}
-            disabled={!isAdmin}
+            disabled={!canEdit}
           >
             <option value="">Select</option>
             {fd.options?.map((o) => (
@@ -312,7 +366,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
               )
             }
             style={commonStyle}
-            disabled={!isAdmin}
+            disabled={!canEdit}
           />
         );
 
@@ -325,7 +379,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
               handleChange(fd.name, e.target.value ? Number(e.target.value) : "")
             }
             style={commonStyle}
-            disabled={!isAdmin}
+            disabled={!canEdit}
           />
         );
 
@@ -336,7 +390,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
             value={val ?? ""}
             onChange={(e) => handleChange(fd.name, e.target.value)}
             style={commonStyle}
-            disabled={!isAdmin}
+            disabled={!canEdit}
           />
         );
     }
@@ -364,20 +418,23 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
   // Render UI
   // -------------------------
   return (
-    <div
-      style={{
-        position: "fixed",
-        right: 0,
-        top: 0,
-        width: "520px",
-        height: "100vh",
-        background: "#fff",
-        boxShadow: "-4px 0px 12px rgba(0,0,0,0.2)",
-        padding: "20px",
-        zIndex: 999999,
-        overflowY: "auto",
-      }}
-    >
+ <div
+  style={{
+    position: "fixed",
+    right: 0,
+    top: 0,
+    width: window.innerWidth <= 768 ? "100%" : "460px",
+    height: "100vh",
+    background: "#fff",
+    boxShadow: "-4px 0 12px rgba(0,0,0,0.2)",
+      padding: 7,
+    overflowY: "auto",
+    overscrollBehavior: "contain",
+    overflowX: "auto",               // ⭐ ADD THIS
+    WebkitOverflowScrolling: "touch",// ⭐ ADD THIS
+    zIndex: 999999,
+  }}
+>
       <h2 style={{ color: "#800000", marginTop: 0 }}>Project Details</h2>
 
       <button
@@ -405,7 +462,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={inputStyle}
         value={form.name || ""}
         onChange={(e) => handleChange("name", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       {/* Customer Name */}
@@ -414,7 +471,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={inputStyle}
         value={form.customerName || ""}
         onChange={(e) => handleChange("customerName", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       {/* Phone */}
@@ -423,7 +480,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={inputStyle}
         value={form.phone || ""}
         onChange={(e) => handleChange("phone", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       {/* Address */}
@@ -433,7 +490,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={{ ...inputStyle, resize: "vertical" }}
         value={form.address || ""}
         onChange={(e) => handleChange("address", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       {/* Capacity */}
@@ -443,7 +500,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         type="number"
         value={form.capacity || 0}
         onChange={(e) => handleChange("capacity", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       {/* 60% Received Date */}
@@ -457,7 +514,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={inputStyle}
         value={toISO(form.dispatchDate)}
         onChange={(e) => handleChange("dispatchDate", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       <label style={label}>Dispatch Status</label>
@@ -473,7 +530,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={inputStyle}
         value={toISO(form.installationDate)}
         onChange={(e) => handleChange("installationDate", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       <label style={label}>Installation Status</label>
@@ -489,7 +546,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={inputStyle}
         value={toISO(form.netMeterDate)}
         onChange={(e) => handleChange("netMeterDate", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       <label style={label}>Net Meter Status</label>
@@ -504,7 +561,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={inputStyle}
         value={form.nationalPortalStage || ""}
         onChange={(e) => handleChange("nationalPortalStage", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       >
         <option value="">Select</option>
         <option>Registration Pending</option>
@@ -519,7 +576,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={inputStyle}
         value={form.status || "Not Started"}
         onChange={(e) => handleChange("status", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       >
         <option>Not Started</option>
         <option>In Progress</option>
@@ -534,7 +591,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         type="date"
         value={form.startDate ? form.startDate.split("T")[0] : ""}
         onChange={(e) => handleChange("startDate", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       {/* End Date */}
@@ -544,7 +601,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         type="date"
         value={form.endDate ? form.endDate.split("T")[0] : ""}
         onChange={(e) => handleChange("endDate", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       {/* Notes */}
@@ -554,7 +611,7 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         style={{ ...inputStyle, resize: "vertical" }}
         value={form.notes || ""}
         onChange={(e) => handleChange("notes", e.target.value)}
-        disabled={!isAdmin}
+        disabled={!canEdit}
       />
 
       {/* DYNAMIC FIELDS */}
@@ -586,60 +643,70 @@ const ProjectDrawer = ({ project, onClose, refresh }) => {
         </>
       )}
 
-      {/* Save Button */}
-      <div style={{ height: "130px" }}></div>
-      <div
-        style={{
-          position: "fixed",
-          bottom: 0,
-          right: 0,
-          width: "520px",
-          background: "#fff",
-          padding: "15px 20px",
-          borderTop: "1px solid #ccc",
-          display: "flex",
-          justifyContent: "space-between",
-          gap: "10px",
-          zIndex: 9999999,
-        }}
-      >
-        {isAdmin && (
-          <button
-            onClick={saveProject}
-            disabled={saving}
-            style={{
-              flex: 1,
-              background: "#800000",
-              color: "#fff",
-              padding: "12px 0",
-              border: "none",
-              borderRadius: "8px",
-              fontWeight: "bold",
-              cursor: "pointer",
-            }}
-          >
-            {saving ? "Saving..." : "Save"}
-          </button>
-        )}
+      {/* Save */}
+     {/* Spacer so content doesn't hide behind fixed buttons */}
+<div style={{ height: "140px" }}></div>
 
-        <button
-          onClick={onClose}
-          style={{
-            flex: 1,
-            background: "#fff",
-            color: "#800000",
-            padding: "12px 0",
-            borderRadius: "8px",
-            border: "2px solid #800000",
-            fontWeight: "bold",
-            cursor: "pointer",
-          }}
-        >
-          Cancel
-        </button>
-      </div>
+{/* FIXED BOTTOM BUTTON BAR */}
+<div
+  style={{
+    borderTop: "1px solid #eee",
+    padding: 12,
+    display: "flex",
+    gap: 10,
+    marginTop: 20,
+  }}
+>
+         {canEdit && (
+    <button
+      onClick={saveProject}
+      disabled={saving}
+      style={{
+        flex: 1,
+        background: "#800000",
+        color: "#fff",
+        padding: "12px 0",
+        borderRadius: "8px",
+        border: "none",
+        fontWeight: "bold",
+      }}
+    >
+      {saving ? "Saving..." : "Save"}
+    </button>
+  )}
+  {isAdmin && (
+  <button
+    onClick={handleDeleteProject}
+    style={{
+      flex: 1,
+      background: "red",
+      color: "white",
+      padding: "12px 0",
+      borderRadius: "8px",
+      border: "none",
+      fontWeight: "bold",
+      marginRight: 10
+    }}
+  >
+    Delete Project
+  </button>
+)}
+
+  <button
+    onClick={onClose}
+    style={{
+      flex: 1,
+      background: "#fff",
+      color: "#800000",
+      border: "2px solid #800000",
+      padding: "12px 0",
+      borderRadius: "8px",
+      fontWeight: 700,
+    }}
+  >
+    Cancel
+  </button>
+</div>
     </div>
   );
 };
-
-export default ProjectDrawer;

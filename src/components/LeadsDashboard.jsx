@@ -5,11 +5,17 @@ import { collection, getDocs } from "firebase/firestore";
 import * as XLSX from "xlsx";
 import LeadDrawer from "./LeadDrawer";
 import { useLocation, useNavigate } from "react-router-dom";
+import { getAuth } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { usePermission } from "../hooks/usePermission";
+import { getScopedQuery } from "../helpers/getScopedQuery";
+
 
 const DEFAULT_COLUMNS = [
   { key: "autoId", label: "KPI ID" },
   { key: "name", label: "Name" },
   { key: "phone", label: "Phone" },
+  { key: "source", label: "Lead Source" },
   { key: "email", label: "Email" },
   { key: "location", label: "Location" },
   { key: "teleSale", label: "Tele-Sales" },
@@ -26,7 +32,33 @@ const DEFAULT_COLUMNS = [
   { key: "updatedAt", label: "Updated At" },
 ];
 
+const isMobile = window.innerWidth <= 768;
+
 export default function LeadsDashboard() {
+
+  const perm = usePermission("leads");   // ⭐ ADD THIS
+
+  if (perm.loading) {
+    return (
+      <p style={{ padding: 20, color: "#800000" }}>
+        Checking permissions...
+      </p>
+    );
+  }
+
+  if (!perm.read) {
+    return (
+      <div style={{ padding: 30, textAlign: "center", color: "#800000" }}>
+        <h2>🚫 Access Denied</h2>
+        <p>You do not have permission to view Leads.</p>
+      </div>
+    );
+  }
+
+  return <LeadsDashboardInner perm={perm} />;
+}
+
+function LeadsDashboardInner({ perm }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [leads, setLeads] = useState([]);
@@ -36,6 +68,7 @@ export default function LeadsDashboard() {
   const [perPage, setPerPage] = useState(10);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+
 
  const HIDE_BY_DEFAULT = [
   "email",
@@ -72,30 +105,40 @@ const deletedFieldKeys =
 
   // ✅ Fetch Leads
   const fetchLeads = async () => {
-    setLoading(true);
-    try {
-      const snap = await getDocs(collection(db, "leads"));
-      const data = snap.docs.map((doc, idx) => {
-        const d = doc.data();
-        return {
-          id: doc.id,
-          autoId: d.autoId || `KPI-${String(idx + 1).padStart(3, "0")}`,
-          ...d,
-        };
-      });
-      data.sort((a, b) => {
-        const at = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
-        const bt = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
-        return bt - at;
-      });
-      setLeads(data);
-    } catch (err) {
-      console.error("Error fetching leads:", err);
-      setLeads([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+  setLoading(true);
+  try {
+    const auth = getAuth();
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser) return;
+
+    // 🔥 build role-based query
+    const q = await getScopedQuery("leads");
+
+    const snap = await getDocs(q);
+
+    const data = snap.docs.map((doc, idx) => {
+      const d = doc.data();
+      return {
+        id: doc.id,
+        autoId: d.autoId || `KPI-${String(idx + 1).padStart(3, "0")}`,
+        ...d,
+      };
+    });
+
+    data.sort((a, b) => {
+      const at = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+      const bt = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+      return bt - at;
+    });
+
+    setLeads(data);
+  } catch (err) {
+    console.error("Error fetching leads:", err);
+    setLeads([]);
+  } finally {
+    setLoading(false);
+  }
+};
 
 // 1️⃣ First useEffect → fetch leads
 useEffect(() => {
@@ -151,19 +194,28 @@ useEffect(() => {
 }, []);
 
   // ✅ Filtering, sorting, pagination
-  const filteredLeads = leads.filter((lead) => {
-    const matchSearch =
-      (lead.name || "").toString().toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (lead.email || "").toString().toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (lead.phone || "").toString().includes(searchTerm);
-    const matchStatus = statusFilter === "all" || lead.status === statusFilter;
-    const matchColumnFilters = Object.keys(filters).every((key) => {
-      const val = filters[key]?.toLowerCase();
-      if (!val) return true;
-      return (lead[key] ?? "").toString().toLowerCase().includes(val);
-    });
-    return matchSearch && matchStatus && matchColumnFilters;
+const filteredLeads = leads.filter((lead) => {
+  const q = searchTerm.trim().toLowerCase();
+
+  const matchSearch =
+    !q ||
+    (lead.autoId || "").toString().toLowerCase().includes(q) ||
+    (lead.kpiId || "").toString().toLowerCase().includes(q) ||
+    (lead.name || "").toString().toLowerCase().includes(q) ||
+    (lead.email || "").toString().toLowerCase().includes(q) ||
+    (lead.phone || "").toString().includes(q);
+
+  const matchStatus =
+    statusFilter === "all" || lead.status === statusFilter;
+
+  const matchColumnFilters = Object.keys(filters).every((key) => {
+    const val = filters[key]?.toLowerCase();
+    if (!val) return true;
+    return (lead[key] ?? "").toString().toLowerCase().includes(val);
   });
+
+  return matchSearch && matchStatus && matchColumnFilters;
+});
 
   const sortedLeads = [...filteredLeads].sort((a, b) => {
     const av = a[sort.key]?.toDate?.() ?? a[sort.key] ?? "";
@@ -443,9 +495,23 @@ const finalCols = [
   // ---------- END: TABLE HEADER & ROW RENDERING ----------
   
   return (
-    <div style={styles.container}>
+    <div
+  style={{
+    ...styles.container,
+    flexDirection: isMobile ? "column" : "row",
+    width: "100%",
+  }}
+>
       {/* Sidebar */}
-      <div style={styles.sidebar}>
+      <div
+  style={{
+    ...styles.sidebar,
+    width: isMobile ? "100%" : "230px",
+    minWidth: isMobile ? "100%" : "230px",
+    maxWidth: isMobile ? "100%" : "230px",
+    boxSizing: "border-box",
+  }}
+>
         <h3 style={styles.sidebarTitle}>Filter Leads</h3>
         <input
           type="text"
@@ -481,15 +547,6 @@ const finalCols = [
             </option>
           ))}
         </select>
-        <button
-          style={styles.createButton}
-          onClick={() => {
-            setSelectedLead(null);
-            setIsDrawerOpen(true);
-          }}
-        >
-          + Create Lead
-        </button>
       </div>
 
 {/* Main Content */}
@@ -501,15 +558,17 @@ const finalCols = [
     <div style={{ display: "flex", gap: 10 }}>
 
       {/* ⭐ CREATE LEAD BUTTON MOVED TO TOP */}
-      <button
-        style={styles.exportBtn}
-        onClick={() => {
-          setSelectedLead(null);
-          setIsDrawerOpen(true);
-        }}
-      >
-        + Create Lead
-      </button>
+      {perm.create && (
+  <button
+    style={styles.exportBtn}
+    onClick={() => {
+      setSelectedLead(null);
+      setIsDrawerOpen(true);
+    }}
+  >
+    + Create Lead
+  </button>
+)}
 
       {/* EXPORT */}
       <button
@@ -610,117 +669,126 @@ const finalCols = [
           <p style={{ color: "#800000" }}>No leads found.</p>
         ) : (
           <>
-            <div style={styles.tableWrapper}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    {finalCols.map((col) => (
-                      <th key={col.key} style={styles.th}>
-                        <div style={styles.headerCell}>
-                          <span>{col.label}</span>
-                          <button
-                            style={styles.iconButton}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const rect = e.target.getBoundingClientRect();
-                              setMenuPos({ top: rect.top });
-                              setOpenMenuFor(
-                                openMenuFor === col.key ? null : col.key
-                              );
-                            }}
-                          >
-                            ≡
-                          </button>
-                          {openMenuFor === col.key && (
-                            <ColumnMenu columnKey={col.key} />
-                          )}
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {pagedLeads.map((lead) => (
-                    <tr
-                      key={lead.id}
-                      style={{ ...styles.tr, cursor: "pointer" }}
-                      onClick={() => {
-                        setSelectedLead(lead);
-                        setIsDrawerOpen(true);
-                      }}
-                    >
-                      {finalCols.map((col) => (
-                        <td key={col.key} style={styles.td}>
-{(() => {
-  const value = lead[col.key];
-
-  if (!value) return "";
-
-  // Timestamp
-  if (value.toDate) return value.toDate().toLocaleDateString("en-GB");
-
-  // Array
-  if (Array.isArray(value)) return value.join(", ");
-
-  // Object
-  if (typeof value === "object") {
-    if (value.label) return value.label;
-    if (value.name) return value.name;
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return "";
-    }
-  }
-
-  return value;
-})()}
-</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination */}
-            <div style={styles.pagination}>
-              <span>
-                {startIdx + 1}–{Math.min(startIdx + perPage, sortedLeads.length)}{" "}
-                of {sortedLeads.length}
-              </span>
-              <div style={{ display: "flex", gap: 8 }}>
+ <div
+  style={{
+    height: "65vh",
+    overflowY: "auto",
+    overflowX: "auto",
+    WebkitOverflowScrolling: "touch"
+  }}
+>
+  <div style={styles.tableWrapper}>
+    <table style={styles.table}>
+      <thead>
+        <tr>
+          {finalCols.map((col) => (
+            <th key={col.key} style={styles.th}>
+              <div style={styles.headerCell}>
+                <span>{col.label}</span>
                 <button
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  style={styles.pageBtn}
+                  style={styles.iconButton}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const rect = e.target.getBoundingClientRect();
+                    setMenuPos({ top: rect.top });
+                    setOpenMenuFor(
+                      openMenuFor === col.key ? null : col.key
+                    );
+                  }}
                 >
-                  Prev
+                  ≡
                 </button>
-                <button
-                  disabled={page >= totalPages}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  style={styles.pageBtn}
-                >
-                  Next
-                </button>
+                {openMenuFor === col.key && (
+                  <ColumnMenu columnKey={col.key} />
+                )}
               </div>
-            </div>
+            </th>
+          ))}
+        </tr>
+      </thead>
+
+      <tbody>
+        {pagedLeads.map((lead) => (
+          <tr
+            key={lead.id}
+            style={{ ...styles.tr, cursor: "pointer" }}
+            onClick={() => {
+              setSelectedLead(lead);
+              setIsDrawerOpen(true);
+            }}
+          >
+            {finalCols.map((col) => (
+              <td key={col.key} style={styles.td}>
+                {(() => {
+                  const value = lead[col.key];
+
+                  if (!value) return "";
+
+                  if (value.toDate)
+                    return value.toDate().toLocaleDateString("en-GB");
+
+                  if (Array.isArray(value)) return value.join(", ");
+
+                  if (typeof value === "object") {
+                    if (value.label) return value.label;
+                    if (value.name) return value.name;
+                    try {
+                      return JSON.stringify(value);
+                    } catch {
+                      return "";
+                    }
+                  }
+
+                  return value;
+                })()}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+
+  {/* Pagination */}
+  <div style={styles.pagination}>
+    <span>
+      {startIdx + 1}–
+      {Math.min(startIdx + perPage, sortedLeads.length)} of{" "}
+      {sortedLeads.length}
+    </span>
+    <div style={{ display: "flex", gap: 8 }}>
+      <button
+        disabled={page <= 1}
+        onClick={() => setPage((p) => Math.max(1, p - 1))}
+        style={styles.pageBtn}
+      >
+        Prev
+      </button>
+      <button
+        disabled={page >= totalPages}
+        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+        style={styles.pageBtn}
+      >
+        Next
+      </button>
+    </div>
+  </div>
+</div>
           </>
         )}
       </div>
 
       {isDrawerOpen && (
-        <LeadDrawer
-          onClose={() => {
-            setIsDrawerOpen(false);
-            setSelectedLead(null);
-          }}
-          onLeadAdded={fetchLeads}
-          existingLead={selectedLead}
-        />
-      )}
-
+  <LeadDrawer
+    onClose={() => {
+      setIsDrawerOpen(false);
+      setSelectedLead(null);
+    }}
+    onLeadAdded={fetchLeads}
+    existingLead={selectedLead}
+    refreshLeads={fetchLeads}   // 👈 ADD THIS LINE
+  />
+)}
       {showExportDialog && <ExportDialog />}
     </div>
   );
@@ -734,16 +802,14 @@ const styles = {
     fontFamily: "Poppins, sans-serif",
     backgroundColor: "#fff",
   },
- sidebar: {
-  width: 260,
+sidebar: {
   backgroundColor: "#800000",
   color: "#fff",
-  padding: 20,
+  padding: 16,
   display: "flex",
   flexDirection: "column",
   gap: 12,
   position: "relative",
-  minHeight: "100vh",   // ⭐ use minHeight instead of height
   boxSizing: "border-box",
 },
   sidebarTitle: { fontWeight: "bold", fontSize: 18 },
@@ -766,13 +832,14 @@ const styles = {
   width: "auto",
 },
 
-  mainContent: {
+mainContent: {
   flex: 1,
-  padding: "20px",
-  overflow: "hidden",
+  padding: isMobile ? "12px" : "20px",
+  overflowX: "auto",
   width: "100%",
   boxSizing: "border-box",
 },
+
   headerRow: {
     display: "flex",
     justifyContent: "space-between",
@@ -825,7 +892,6 @@ tableWrapper: {
   position: "relative",
   zIndex: 1,
  maxHeight: "calc(100vh - 150px)",
-overflowY: "auto",
 overflowX: "auto", // ⭐ Fit screen height
   overflowY: "auto",
 },
@@ -834,14 +900,15 @@ table: {
   minWidth: "100%",
   borderCollapse: "collapse",
 },
-  th: {
-    backgroundColor: "#800000",
-    color: "#fff",
-    padding: "12px 10px",
-    textAlign: "left",
-    whiteSpace: "nowrap",
-    position: "relative",
-  },
+th: {
+  backgroundColor: "#800000",
+  color: "#fff",
+  padding: "12px 10px",
+  position: "sticky",
+  top: 0,
+  zIndex: 10,
+  whiteSpace: "nowrap",
+},
 td: {
   padding: "10px",
   fontSize: "13px",

@@ -75,6 +75,15 @@ match /deals/{id} {
     resource.data._systemDelete == true;
 }
 
+    match /paymentTargets/{doc} {
+      allow read: if request.auth != null;
+
+      allow write: if
+        request.auth.token.role == 'admin' ||
+        request.auth.token.role == 'sales_head';
+    }
+
+
 
     // ============================================================
     // SALES ORDERS
@@ -165,6 +174,16 @@ match /deals/{id} {
       allow write: if isAuthenticated() &&
         (authRole() in ["admin", "sales_head"]);
     }
+    
+  match /attendance_workingDays/{docId} {
+  allow read: if request.auth != null;
+  allow write: if request.auth != null && authRole() == "admin";
+}
+
+match /attendanceSettings/{docId} {
+  allow read: if request.auth != null;
+  allow write: if request.auth != null && authRole() == "admin";
+}
 
     // ============================================================
     // ATTENDANCE
@@ -244,6 +263,22 @@ match /deals/{id} {
       allow create, update, delete: if request.auth != null &&
         request.auth.token.role == "admin";
     }
+    
+                // ============================================================
+// MODULE PERMISSIONS  
+// ============================================================
+match /modulePermissions/{moduleName} {
+  
+  // allow read main doc (optional)
+  allow read: if request.auth != null;
+  allow write: if request.auth != null && authRole() == "admin";
+
+  // 🔥 allow reading users/<uid> inside module
+  match /users/{uid} {
+    allow read: if request.auth != null;        // allow any logged in
+    allow write: if request.auth != null && authRole() == "admin";
+  }
+}
 
     // ============================================================
     // CRM FIELDS

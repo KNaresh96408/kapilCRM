@@ -7,31 +7,58 @@ import {
   getDocs,
   updateDoc,
   doc,
+  getDoc,
   serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../firebaseConfig";
-import { getUserRoleFromDB } from "../helpers/getUserRole";
 import { useAuth } from "../context/AuthContext";
 
+/* =====================================================
+   HELPERS
+===================================================== */
+
+const DIRECTOR_EMAIL = "khader@kapilpower.com";
+
+const SALES_HEAD_USERS = [
+  "saikiransingoji@kapilpower.com",
+  "vasantha@kapilpower.com",
+  "varalakshmi@kapilpower.com",
+];
+
+const getReportsToEmail = async (uid) => {
+  const snap = await getDoc(doc(db, "Users", uid));
+  return snap.exists() ? snap.data().reportsTo || "" : "";
+};
+
+/* =====================================================
+   COMPONENT
+===================================================== */
 
 export default function LeaveRequest({ user }) {
   const { roleData } = useAuth();
+
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [reason, setReason] = useState("");
+  const [requestType, setRequestType] = useState("leave");
+
   const [myRequests, setMyRequests] = useState([]);
   const [pendingForMe, setPendingForMe] = useState([]);
+
   const [role, setRole] = useState("");
-  const [requestType, setRequestType] = useState("leave"); // "leave" or "comp_off"
 
   const uid = user?.uid;
   const email = user?.email || "";
 
-useEffect(() => {
-  if (roleData?.role) {
-    setRole(roleData.role.toLowerCase()); // role = "admin", "state_head", etc.
-  }
-}, [roleData]);
+  /* ---------------- ROLE ---------------- */
+
+  useEffect(() => {
+    if (roleData?.role) {
+      setRole(roleData.role.toLowerCase());
+    }
+  }, [roleData]);
+
+  /* ---------------- MY REQUESTS ---------------- */
 
   useEffect(() => {
     if (!uid) return;
@@ -39,117 +66,148 @@ useEffect(() => {
   }, [uid]);
 
   const loadMyRequests = async () => {
-    const q = query(collection(db, "leaveRequests"), where("userId", "==", uid));
+    const q = query(
+      collection(db, "leaveRequests"),
+      where("userId", "==", uid)
+    );
     const snap = await getDocs(q);
     setMyRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   };
 
+  /* =====================================================
+     SUBMIT LEAVE (FINAL LOGIC)
+  ===================================================== */
+
   const submitLeave = async () => {
-    if (!from || !to || !reason) return alert("Please fill all fields");
+    if (!from || !to || !reason) {
+      alert("Please fill all fields");
+      return;
+    }
 
+    let approverEmail = "";
     let status = "";
-    let chain = {
-      zonal_status: "n/a",
-      state_status: "n/a",
-      sales_status: "n/a",
-      teamlead_status: "n/a",
-      admin_status: "n/a",
-    };
 
+    /* ---------- CONSULTANT ---------- */
     if (role === "consultant") {
+      approverEmail = await getReportsToEmail(uid); // zonal
       status = "pending_zonal";
-      chain.zonal_status = "pending";
-    } else if (role === "admin") {
+    }
+
+    /* ---------- ZONAL MANAGER ---------- */
+    else if (role === "zonal_manager") {
+      approverEmail = await getReportsToEmail(uid); // state head
+      status = "pending_state";
+    }
+
+    /* ---------- STATE HEAD ---------- */
+    else if (role === "state_head") {
+      approverEmail = await getReportsToEmail(uid); // sales head
       status = "pending_sales";
-      chain.sales_status = "pending";
-    } else if (role === "state_head") {
-      status = "pending_sales";
-      chain.sales_status = "pending";
-    } else if (role === "telesales") {
-      status = "pending_teamlead";
-      chain.teamlead_status = "pending";
-    } else if (role === "team_lead") {
-      status = "pending_sales";
-      chain.sales_status = "pending";
-    } else if (role === "mis_executive") {
-      status = "pending_admin";
-      chain.admin_status = "pending";
-    } else {
-      status = "pending_sales";
-      chain.sales_status = "pending";
+    }
+
+    /* ---------- SALES HEAD ---------- */
+    else if (
+      role === "sales_head" ||
+      SALES_HEAD_USERS.includes(email)
+    ) {
+      approverEmail = DIRECTOR_EMAIL;
+      status = "pending_director";
+    }
+
+    /* ---------- FALLBACK ---------- */
+    else {
+      approverEmail = DIRECTOR_EMAIL;
+      status = "pending_director";
+    }
+
+    if (!approverEmail) {
+      alert("Reporting manager not configured");
+      return;
     }
 
     await addDoc(collection(db, "leaveRequests"), {
       userId: uid,
-      userName: user.displayName || user.name || email,
+      userName: user.displayName || email,
+      userEmail: email,
       from,
       to,
       reason,
-      status,
       type: requestType,
-      ...chain,
+      approverEmail,
+      status,
       createdAt: serverTimestamp(),
     });
 
-    alert("Request submitted");
+    alert("Leave request submitted");
     setFrom("");
     setTo("");
     setReason("");
     loadMyRequests();
   };
 
-  const handleAction = async (req, action, rejectReason = "") => {
+  /* =====================================================
+     APPROVAL ACTION
+  ===================================================== */
+
+  const handleAction = async (req, action) => {
     const ref = doc(db, "leaveRequests", req.id);
-    let update = {};
 
-    if (role === "zonal_manager" && req.status === "pending_zonal") {
-      update = action === "approve" ? { zonal_status: "approved", status: "pending_state" } : { zonal_status: "rejected", status: "rejected", rejectReason };
+    if (action === "approve") {
+      /* FINAL APPROVAL BY DIRECTOR */
+      if (email === DIRECTOR_EMAIL) {
+        await updateDoc(ref, { status: "approved" });
+      } else {
+        const nextApprover = await getReportsToEmail(req.userId);
+
+        await updateDoc(ref, {
+          approverEmail: nextApprover || DIRECTOR_EMAIL,
+          status:
+            req.status === "pending_sales"
+              ? "pending_director"
+              : "pending",
+        });
+      }
+    } else {
+      const reason = prompt("Rejection reason:");
+      if (!reason) return;
+      await updateDoc(ref, {
+        status: "rejected",
+        rejectReason: reason,
+      });
     }
 
-    if (role === "state_head" && req.status === "pending_state") {
-      update = action === "approve" ? { state_status: "approved", status: "pending_sales" } : { state_status: "rejected", status: "rejected", rejectReason };
-    }
-
-    if (role === "sales_head" && req.status === "pending_sales") {
-      update = action === "approve" ? { sales_status: "approved", status: "approved" } : { sales_status: "rejected", status: "rejected", rejectReason };
-    }
-
-    if (role === "team_lead" && req.status === "pending_teamlead") {
-      update = action === "approve" ? { teamlead_status: "approved", status: "pending_sales" } : { teamlead_status: "rejected", status: "rejected", rejectReason };
-    }
-
-    if (role === "admin" && req.status === "pending_admin") {
-      update = action === "approve" ? { admin_status: "approved", status: "pending_sales" } : { admin_status: "rejected", status: "rejected", rejectReason };
-    }
-
-    await updateDoc(ref, update);
-    alert("Updated");
     loadMyRequests();
     loadPendingForMe();
   };
 
+  /* ---------------- PENDING FOR ME ---------------- */
+
   useEffect(() => {
     loadPendingForMe();
-  }, [role]);
+  }, [email]);
 
   const loadPendingForMe = async () => {
-    let q;
+    if (!email) return;
 
-    if (role === "zonal_manager")
-      q = query(collection(db, "leaveRequests"), where("status", "==", "pending_zonal"));
-    else if (role === "state_head")
-      q = query(collection(db, "leaveRequests"), where("status", "==", "pending_state"));
-    else if (role === "sales_head")
-      q = query(collection(db, "leaveRequests"), where("status", "==", "pending_sales"));
-    else if (role === "team_lead")
-      q = query(collection(db, "leaveRequests"), where("status", "==", "pending_teamlead"));
-    else if (role === "admin")
-      q = query(collection(db, "leaveRequests"), where("status", "==", "pending_admin"));
+    const q = query(
+      collection(db, "leaveRequests"),
+      where("approverEmail", "==", email),
+      where("status", "in", [
+        "pending",
+        "pending_zonal",
+        "pending_state",
+        "pending_sales",
+        "pending_director",
+      ])
+    );
 
-    if (!q) return setPendingForMe([]);
     const snap = await getDocs(q);
     setPendingForMe(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
   };
+
+  /* =====================================================
+     UI
+  ===================================================== */
 
   return (
     <div style={{ padding: 12, border: "1px solid #ccc", borderRadius: 8 }}>
@@ -158,7 +216,7 @@ useEffect(() => {
       <label>Request Type</label>
       <select value={requestType} onChange={(e) => setRequestType(e.target.value)} style={input}>
         <option value="leave">Leave</option>
-        <option value="comp_off">Comp-Off (Worked on holiday)</option>
+        <option value="comp_off">Comp-Off</option>
       </select>
 
       <label>From</label>
@@ -177,33 +235,22 @@ useEffect(() => {
       <h4>My Requests</h4>
       {myRequests.map((r) => (
         <div key={r.id} style={item}>
-          <b>{r.from} → {r.to} ({r.type || "leave"})</b>
+          <b>{r.from} → {r.to}</b>
           <p>Status: {r.status}</p>
-          {r.rejectReason && <p><b>Rejected Reason:</b> {r.rejectReason}</p>}
+          {r.rejectReason && <p><b>Rejected:</b> {r.rejectReason}</p>}
         </div>
       ))}
 
-      {(pendingForMe.length > 0) && (
+      {pendingForMe.length > 0 && (
         <>
-          <h4>Requests Waiting for Your Approval</h4>
-
+          <h4>Requests Waiting For Your Approval</h4>
           {pendingForMe.map((r) => (
             <div key={r.id} style={item}>
               <b>{r.userName}</b>
-              <p>{r.from} → {r.to} ({r.type || "leave"})</p>
-              <p><b>Reason:</b> {r.reason}</p>
-
+              <p>{r.from} → {r.to}</p>
+              <p>{r.reason}</p>
               <button style={btn} onClick={() => handleAction(r, "approve")}>Approve</button>
-
-              <button
-                style={btnRed}
-                onClick={() => {
-                  const w = prompt("Rejection reason:");
-                  if (w) handleAction(r, "reject", w);
-                }}
-              >
-                Reject
-              </button>
+              <button style={btnRed} onClick={() => handleAction(r, "reject")}>Reject</button>
             </div>
           ))}
         </>
@@ -212,7 +259,10 @@ useEffect(() => {
   );
 }
 
-// styles (same as your file)
+/* =====================================================
+   STYLES
+===================================================== */
+
 const btn = {
   marginTop: 8,
   padding: "8px 12px",

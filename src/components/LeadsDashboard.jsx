@@ -18,7 +18,6 @@ const DEFAULT_COLUMNS = [
   { key: "source", label: "Lead Source" },
   { key: "email", label: "Email" },
   { key: "location", label: "Location" },
-  { key: "teleSale", label: "Tele-Sales" },
   { key: "consultantName", label: "Consultant" },
   { key: "status", label: "Status" },
   { key: "siteVisitArranged", label: "Site Visit Arranged" },
@@ -887,7 +886,6 @@ mainContent: {
   },
 tableWrapper: {
   width: "100%",
-  overflowX: "auto",
   borderRadius: 8,
   position: "relative",
   zIndex: 1,

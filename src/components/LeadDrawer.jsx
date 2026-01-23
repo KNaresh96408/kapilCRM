@@ -48,7 +48,6 @@ const isAdmin = currentUser?.email && adminEmails.includes(currentUser.email);
     "email",
     "location",
     "locationLink",
-    "teleSale",
     "assignedConsultant",
     "status",
     "siteVisitArranged",
@@ -67,6 +66,22 @@ const isAdmin = currentUser?.email && adminEmails.includes(currentUser.email);
     siteVisitArranged: "no",
     siteVisitArrangedDate: "",
   });
+  const TELESALES_USERS = [
+  "Amrutha",
+  "Anjali",
+  "Priyanka",
+  "B Swathi",
+  "Charitha",
+  "E Gopinadh",
+  "Bhargavi",
+  "Jyotsna",
+  "Varshasri",
+  "Pooja",
+  "Sandhya",
+  "Chandra Sai",
+  "Tejo rama",
+  "Thanniru Mery",
+];
 
   useEffect(() => {
     const unsub = auth.onAuthStateChanged((user) =>
@@ -563,25 +578,44 @@ if (!perm.read) {
 
             {/* STATIC FIELDS (unchanged) */}
             {[
-              { label: "Customer Name*", name: "name" },
-              { label: "Contact Number*", name: "phone" },
-              { label: "Email", name: "email" },
-              { label: "Location*", name: "location" },
-              { label: "Google Maps Link", name: "locationLink" },
-              { label: "Tele-Sales Executive", name: "teleSale" },
-            ].map((f) => (
-              <div key={f.name} style={styles.inputGroup}>
-                <label style={styles.label}>{f.label}</label>
-                <input
-                  name={f.name}
-                  value={lead[f.name] || ""}
-                  onChange={(e) =>
-                    setLead({ ...lead, [e.target.name]: e.target.value })
-                  }
-                  style={styles.input}
-                />
-              </div>
-            ))}
+  { label: "Customer Name*", name: "name" },
+  { label: "Contact Number*", name: "phone" },
+  { label: "Email", name: "email" },
+  { label: "Location*", name: "location" },
+  { label: "Google Maps Link", name: "locationLink" },
+].map((f) => (
+  <div key={f.name} style={styles.inputGroup}>
+    <label style={styles.label}>{f.label}</label>
+
+    {/* ⭐ TELESALES DROPDOWN */}
+    {f.name === "teleSale" ? (
+      <select
+        name="teleSale"
+        value={lead.teleSale || ""}
+        onChange={(e) =>
+          setLead({ ...lead, teleSale: e.target.value })
+        }
+        style={styles.select}
+      >
+        <option value="">Select Tele-Sales</option>
+        {TELESALES_USERS.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
+      </select>
+    ) : (
+      <input
+        name={f.name}
+        value={lead[f.name] || ""}
+        onChange={(e) =>
+          setLead({ ...lead, [e.target.name]: e.target.value })
+        }
+        style={styles.input}
+      />
+    )}
+  </div>
+))}
 
             <div style={styles.inputGroup}>
               <label style={styles.label}>Site Visit Arranged</label>

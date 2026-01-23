@@ -5,10 +5,16 @@
 
 import React, { useEffect, useState, useRef } from "react";
 import { Geolocation } from "@capacitor/geolocation";
+import { App } from "@capacitor/app";
+import { LocalNotifications } from "@capacitor/local-notifications";
 import { Capacitor } from "@capacitor/core";
+import { AttendanceService } from "../native/AttendanceService";
+
+
 import kapilLogo from "../kapil-logo.png";
 import { useNavigate } from "react-router-dom";
-
+import { collection, getDocs } from "firebase/firestore";
+import { db } from "../firebase/firebaseConfig";
 
 
 // ------------------------------
@@ -75,6 +81,13 @@ async function requestBackgroundLocation() {
     return false;
   }
 }
+async function requestNotificationPermission() {
+  if (!Capacitor.isNativePlatform()) return true;
+
+  const perm = await LocalNotifications.requestPermissions();
+  return perm.display === "granted";
+}
+
 import {
   fetchAttendanceDoc,
   createOrEnsureDoc,
@@ -91,6 +104,8 @@ import LeaveRequest from "./LeaveRequest";
 import * as XLSX from "xlsx";
 import AttendanceMonthCalendar from "./AttendanceMonthCalendar";
 import AdminHolidayPanel from "./AdminHolidayPanel";
+import ApprovedLeavePanel from "./ApprovedLeavePanel";
+import ActiveInactiveToday from "./ActiveInactiveToday";
 import { getUserRoleFromDB } from "../helpers/getUserRole";
 import { useAuth } from "../context/AuthContext";
 import { getUserNameFromDB } from "../helpers/getUserName";
@@ -109,6 +124,9 @@ async function isLocationPermissionDenied() {
 
 // dynamic leaflet import target
 let L = null;
+
+let foregroundNotified = false;
+
 
 // load logged-in user from localStorage (your app already uses this)// <-- use real logged-in user from AuthContext
 
@@ -144,8 +162,12 @@ const HALF_DAY_MIN = 240; // 4 hours
 
 const isMobile = window.innerWidth < 768; 
 
+
 export default function AttendancePage() {
   const { user, roleData } = useAuth();
+
+  const role = roleData?.role?.toLowerCase() || "";
+
   // -------------------------
 // PROMINENT DISCLOSURE STATE (Google Play requirement)
 // -------------------------
@@ -202,8 +224,15 @@ useEffect(() => {
   const [userList, setUserList] = useState([]);
   const [filterUser, setFilterUser] = useState("");
 
-  // role
-  const [role, setRole] = useState("");
+
+  const canViewAdminPanels = [
+  "admin",
+  "sales_head",
+  "director",
+  "finance_manager",
+  "hr_operations_manager",
+].includes(role);
+
 
   // admin inspect user/day
   const [inspectUserId, setInspectUserId] = useState("");
@@ -256,9 +285,9 @@ const CHECKIN_END   = { h: 11, m: 0 };
   initTodayMap();
 }
           // init admin map if admin DOM exists
-          if (adminMapRef.current && (isAdminUser(role, USER) || role === "sales_head")) {
-            initAdminMap();
-          }
+          if (adminMapRef.current && canViewAdminPanels) {
+  initAdminMap();
+}
         }
       } catch (e) {
         // leaflet optional - map won't render for non-admins if import fails
@@ -272,15 +301,6 @@ const CHECKIN_END   = { h: 11, m: 0 };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role]); // role added so maps init when role changes to admin
 
-  // -------------------------
-  // load the logged-in user's role
-  // -------------------------
-useEffect(() => {
-  if (roleData?.role) {
-    setRole(roleData.role.toLowerCase());
-  }
-}, [roleData]);
-  // -------------------------
   // load today's attendance + ensure doc exists
   // -------------------------
   useEffect(() => {
@@ -311,6 +331,7 @@ useEffect(() => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, userName, todayStr]);
+
 
   // -------------------------
   // countdown or check-in window helper
@@ -393,6 +414,8 @@ const handleCheckIn = async () => {
   setCheckingIn(false);
   return;
 }
+await requestNotificationPermission();
+
 
     await requestBackgroundLocation();
 
@@ -435,8 +458,10 @@ setAttendance((prev) => ({
 }));
 
     const pos = await Geolocation.getCurrentPosition({
-      enableHighAccuracy: true,
-    });
+  enableHighAccuracy: true,
+  timeout: 15000,
+  maximumAge: 0,        // ⭐ FORCE NEW LOCATION
+});
 
     const lat = pos.coords.latitude;
     const lng = pos.coords.longitude;
@@ -448,21 +473,35 @@ setAttendance((prev) => ({
       setUserName(finalName);
     }
 
-    await checkIn({
-      uid,
-      userName: finalName,
-      dateStr: todayStr,
-      coords: { lat, lng },
-      clientIso: new Date().toISOString(),
-    });
+  await checkIn({
+  uid,
+  userName: finalName,
+  dateStr: todayStr,
+  coords: { lat, lng },
+  clientIso: new Date().toISOString(),
+});
+// 🚀 START NATIVE BACKGROUND TRACKING (ANDROID / iOS)
+if (Capacitor.isNativePlatform()) {
+  await AttendanceService.startTracking({
+    uid,
+    dateStr: todayStr,
+  });
+}
+
 
     const updated = await fetchAttendanceDoc(uid, todayStr);
     setAttendance(updated);
 
     startTracking();
+    if (Capacitor.getPlatform() === "android") {
+  alert(
+    "For uninterrupted attendance tracking, please disable battery optimization for Kapil Power CRM."
+  );
+  window.open("app-settings:/", "_self");
+}
+
     alert("Checked in successfully!");
 
-    await requestBackgroundLocation();
   } catch (err) {
     console.error("CHECK-IN ERROR:", err);
 
@@ -490,7 +529,6 @@ const addTrackingPoint = async () => {
         lng: pos.coords.longitude,
       },
     });
-
     const updated = await fetchAttendanceDoc(uid, todayStr);
     setAttendance(updated);
   } catch (e) {
@@ -499,17 +537,26 @@ const addTrackingPoint = async () => {
 };
 
   const startTracking = () => {
-    if (pollRef.current) return;
-    addTrackingPoint();
-    pollRef.current = setInterval(() => addTrackingPoint(), 5 * 60 * 1000); // 5 minutes
-    setTracking(true);
-  };
+  if (pollRef.current) return;
+
+  // ✅ Foreground-only tracking
+  addTrackingPoint();
+
+  pollRef.current = setInterval(() => {
+    if (!document.hidden) {
+      addTrackingPoint();
+    }
+  }, 5 * 60 * 1000);
+
+  setTracking(true);
+};
 
   const stopTracking = () => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = null;
     setTracking(false);
   };
+
 
   // cleanup
   useEffect(() => {
@@ -529,7 +576,13 @@ const addTrackingPoint = async () => {
         dateStr: todayStr,
         clientCheckOutDate: new Date(),
       });
+      if (Capacitor.isNativePlatform()) {
+  await AttendanceService.stopTracking();
+}
       stopTracking();
+      foregroundNotified = false;
+
+
       const updated = await fetchAttendanceDoc(uid, todayStr);
       setAttendance(updated);
       alert(`Checked out: ${res.status} — ${res.totalMinutes} mins`);
@@ -584,22 +637,23 @@ const loadAdmin = async () => {
 
     // build user dropdown
 // build user dropdown (remove duplicates cleanly)
-const seen = new Set();
+// ✅ Build user dropdown from Users collection (SOURCE OF TRUTH)
+const usersSnap = await getDocs(collection(db, "Users"));
+
 const list = [];
-
-all.forEach((r) => {
-  if (!r.userId) return;
-
-  if (!seen.has(r.userId)) {
-    seen.add(r.userId);
-    list.push({
-      id: r.userId,
-      name: r.userName?.trim() || r.userId,
-    });
-  }
+usersSnap.forEach(doc => {
+  const u = doc.data();
+  list.push({
+    id: doc.id,
+    name: u.Name || u.name || u.email || doc.id,
+  });
 });
 
+// Optional: sort alphabetically
+list.sort((a, b) => a.name.localeCompare(b.name));
+
 setUserList(list);
+
 } catch (err) {
   console.warn("loadAdmin err", err);
 }
@@ -680,26 +734,11 @@ const buildMonthlySheet = (records, holidays, workingDays) => {
 
   const month = records[0].date.slice(0, 7); // YYYY-MM
 // ✅ Build unique users by NAME (not UID)
-const usersMap = new Map();
-
-records.forEach((r) => {
-  const name = getExportName(r, userList)?.trim();
-  if (!name) return;
-
-  if (!usersMap.has(name)) {
-    usersMap.set(name, {
-      name,
-      ids: new Set(r.userId ? [r.userId] : []),
-    });
-  } else {
-    if (r.userId) {
-      usersMap.get(name).ids.add(r.userId);
-    }
-  }
-});
-
-const users = Array.from(usersMap.values());
-
+// ✅ Use ALL users from userList (not attendance-driven)
+const users = userList.map(u => ({
+  id: u.id,
+  name: u.name,
+}));
   const today = new Date().toISOString().split("T")[0];
 
   // List month days
@@ -1100,7 +1139,9 @@ useEffect(() => {
       loadHolidays();
       loadWorkingDays();
       // ensure admin map is initialised when admin tab opens (if leaflet loaded)
-      if (L && adminMapRef.current && !adminMapInstance.current) initAdminMap();
+      if (L && adminMapRef.current && !adminMapInstance.current && canViewAdminPanels) {
+  initAdminMap();
+}
     } else if (tab === "today") {
       // refresh today's doc
       (async () => {
@@ -1214,14 +1255,14 @@ if (attendance) {
     History
   </button>
 
-  {(isAdminUser(role, USER) || role === "sales_head") && (
-    <button
-      style={tab === "admin" ? btnActive : btnInActive}
-      onClick={() => setTab("admin")}
-    >
-      Admin
-    </button>
-  )}
+{canViewAdminPanels && (
+  <button
+    style={tab === "admin" ? btnActive : btnInActive}
+    onClick={() => setTab("admin")}
+  >
+    Admin
+  </button>
+)}
 </div>
       </div>
     );
@@ -1242,23 +1283,55 @@ if (tab === "today") {
   }}
 >
 
-      {/* LEAVE REQUEST CARD */}
-      <div
-        style={{
-          width: "100%",
-          maxWidth: isMobile ? "100%" : "600px",
-width: "100%",
-margin: isMobile ? "0" : "0 0 20px 0",
-          padding: "20px",
-          background: "#f7f7f7",
-          borderRadius: "12px",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-        }}
-      >
-        <h2 style={{ color: "#800000", marginBottom: "15px" }}>Leave / Comp-off Request</h2>
+{/* LEAVE + APPROVED PANEL */}
+<div
+  style={{
+    display: "flex",
+    gap: "16px",
+    width: "100%",
+    flexDirection: isMobile ? "column" : "row",
+  }}
+>
+  {/* Leave Request */}
+  <div
+    style={{
+      flex: 1,
+      padding: "20px",
+      background: "#f7f7f7",
+      borderRadius: "12px",
+      boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+    }}
+  >
+    <h2 style={{ color: "#800000", marginBottom: "15px" }}>
+      Leave / Comp-off Request
+    </h2>
+    <LeaveRequest user={USER} />
+  </div>
 
-        <LeaveRequest user={USER} />
-      </div>
+  {/* Approved Leaves */}
+{canViewAdminPanels && (
+  <div
+    style={{
+      flex: 1,
+      padding: "20px",
+      background: "#f7f7f7",      // match Leave box
+      borderRadius: "12px",
+      boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+      display: "flex",
+      flexDirection: "column",   // ✅ important
+    }}
+  >
+    <h2 style={{ color: "#800000", marginBottom: "15px" }}>
+      Approved Leaves / Comp-off
+    </h2>
+
+    {/* scroll ONLY inside panel */}
+    <div style={{ flex: 1, overflowY: "auto" }}>
+      <ApprovedLeavePanel />
+    </div>
+  </div>
+)}
+</div>
 
       {/* MAP */}
       <div
@@ -1277,17 +1350,29 @@ margin: isMobile ? "0" : "0 0 20px 0",
   );
 }
 
-    if (tab === "history") {
-  // history is an array of all days (sorted asc)
+if (tab === "history") {
   return (
-    <AttendanceMonthCalendar
-      records={history}
-      holidays={holidayList}
-      workingDays={workingDaysList}   // ⭐ pass working-day overrides
-      currentUserId={uid}
-    />
+    <>
+      <AttendanceMonthCalendar
+        records={history}
+        holidays={holidayList}
+        workingDays={workingDaysList}
+        currentUserId={uid}
+      />
+
+      {canViewAdminPanels && (
+        <div style={{ marginTop: 30 }}>
+          <ActiveInactiveToday
+  attendance={adminData}
+  users={userList}
+  selectedDate={getTodayStr()}
+/>
+        </div>
+      )}
+    </>
   );
 }
+
 
 if (tab === "admin") {
   return (
@@ -1311,11 +1396,11 @@ if (tab === "admin") {
         </select>
 
         {/* Export Button (Admin / Sales Head Only) */}
-        {(isAdminUser(role, USER) || role === "sales_head") && (
-          <button style={btnStyle} onClick={() => setShowExportPopup(true)}>
-            Export XLSX
-          </button>
-        )}
+        {canViewAdminPanels && (
+  <button style={btnStyle} onClick={() => setShowExportPopup(true)}>
+    Export XLSX
+  </button>
+)}
       </div>
 
           {/* Export popup */}
@@ -1332,44 +1417,96 @@ if (tab === "admin") {
             </div>
           )}
 
-          <div style={{ marginBottom: 12 }}>
-            {/* Admin holiday management */}
-            {isAdminUser(role, USER) && <AdminHolidayPanel />}
-          </div>
+<div style={{ marginBottom: 12 }}>
+  {/* Admin holiday management (ADMIN ONLY stays same) */}
+  {isAdminUser(role, USER) && <AdminHolidayPanel />}
+</div>
 
-          <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+{/* 🔐 Inspect + Records for Admin-like roles */}
+{canViewAdminPanels && (
+  <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+    <div>
+      <h4>Inspect user/day</h4>
+      <select
+        value={inspectUserId}
+        onChange={(e) => setInspectUserId(e.target.value)}
+        style={{ padding: 6, minWidth: 220 }}
+      >
+        <option value="">Select user</option>
+        {userList.map((u) => (
+          <option key={u.id} value={u.id}>
+            {u.name}
+          </option>
+        ))}
+      </select>
+
+      <div style={{ marginTop: 8 }}>
+        <label>Date</label><br />
+        <input
+          type="date"
+          value={inspectDate}
+          onChange={(e) => setInspectDate(e.target.value)}
+        />
+      </div>
+
+      <div style={{ marginTop: 8 }}>
+        <button
+          style={{ ...btnStyle, marginRight: 8 }}
+          onClick={handleInspectLoad}
+          disabled={inspectLoading}
+        >
+          {inspectLoading ? "Loading..." : "Load User Day"}
+        </button>
+        <button
+          style={btnGhost}
+          onClick={() => {
+            setInspectRecord(null);
+            clearMapOnInstance(
+              adminMapInstance,
+              adminMarkersRef,
+              adminPolyRef
+            );
+          }}
+        >
+          Clear
+        </button>
+      </div>
+    </div>
+
+    <div style={{ flex: 1 }}>
+      <h4>Admin Records</h4>
+      <div
+        style={{
+          maxHeight: 360,
+          overflow: "auto",
+          border: "1px solid #eee",
+          padding: 8,
+        }}
+      >
+        {adminFiltered.map((row) => (
+          <div
+            key={`${row.userId}_${row.date}`}
+            style={{
+              padding: 10,
+              borderBottom: "1px solid #f0f0f0",
+            }}
+          >
+            <b>{row.userName}</b> — {row.date}
             <div>
-              <h4>Inspect user/day</h4>
-              <select value={inspectUserId} onChange={(e) => setInspectUserId(e.target.value)} style={{ padding: 6, minWidth: 220 }}>
-                <option value="">Select user</option>
-                {userList.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
-              <div style={{ marginTop: 8 }}>
-                <label>Date</label><br />
-                <input type="date" value={inspectDate} onChange={(e) => setInspectDate(e.target.value)} />
-              </div>
-              <div style={{ marginTop: 8 }}>
-                <button style={{ ...btnStyle, marginRight: 8 }} onClick={handleInspectLoad} disabled={inspectLoading}>
-                  {inspectLoading ? "Loading..." : "Load User Day"}
-                </button>
-                <button style={btnGhost} onClick={() => { setInspectRecord(null); clearMapOnInstance(adminMapInstance, adminMarkersRef, adminPolyRef); }}>Clear</button>
-              </div>
-            </div>
-
-            <div style={{ flex: 1 }}>
-              <h4>Admin Records</h4>
-              <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid #eee", padding: 8 }}>
-                {adminFiltered.map((row) => (
-                  <div key={`${row.userId}_${row.date}`} style={{ padding: 10, borderBottom: "1px solid #f0f0f0" }}>
-                    <b>{row.userName}</b> — {row.date}
-                    <div> Status: {row.status} | Minutes: {row.totalMinutes ?? row.minutes ?? 0} | Locs: {row.locations?.length || 0} </div>
-                  </div>
-                ))}
-                {!adminFiltered.length && <div style={{ padding: 10 }}>No records</div>}
-              </div>
+              Status: {row.status} | Minutes:{" "}
+              {row.totalMinutes ?? row.minutes ?? 0} | Locs:{" "}
+              {row.locations?.length || 0}
             </div>
           </div>
+        ))}
 
+        {!adminFiltered.length && (
+          <div style={{ padding: 10 }}>No records</div>
+        )}
+      </div>
+    </div>
+  </div>
+)}
           {/* Map + details area (for admin inspect result or today's map) */}
           <div style={{ display: "flex", gap: 12 }}>
             <div style={{ flex: 1 }}>

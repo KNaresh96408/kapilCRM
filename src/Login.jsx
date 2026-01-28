@@ -4,6 +4,7 @@ import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import app, { db } from "./firebaseConfig"; // ensure db export
+import { Capacitor } from "@capacitor/core";
 
 const Login = () => {
   const auth = getAuth(app);
@@ -19,7 +20,11 @@ const Login = () => {
 useEffect(() => {
   const unsubscribe = auth.onAuthStateChanged((user) => {
     if (user) {
-      navigate("/apps");
+      if (Capacitor.getPlatform() === "ios") {
+        setTimeout(() => navigate("/apps"), 300);
+      } else {
+        navigate("/apps");
+      }
     }
   });
 
@@ -70,7 +75,11 @@ useEffect(() => {
       localStorage.setItem("kp-user", JSON.stringify(kpUser));
 
       // redirect to apps selector
-      navigate("/apps");
+      if (Capacitor.getPlatform() === "ios") {
+  setTimeout(() => navigate("/apps"), 300);
+} else {
+  navigate("/apps");
+}
     } catch (err) {
       console.error("Login error:", err);
       setError("Invalid credentials or server error. Contact admin.");

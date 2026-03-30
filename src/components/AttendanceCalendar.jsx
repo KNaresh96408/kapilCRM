@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { db } from "../firebaseConfig";
 import { collection, getDocs } from "firebase/firestore";
+import { fetchCollectionREST } from "../helpers/firestoreRest";
 
 /**
  * AttendanceCalendar component
@@ -16,6 +17,12 @@ export default function AttendanceCalendar({ records: propRecords, userId }) {
   const [loading, setLoading] = useState(!Array.isArray(propRecords));
   const [error, setError] = useState(null);
 
+  // ⭐ Memoize filtered records to prevent unnecessary re-renders
+  const memoizedRecords = useMemo(() => {
+    if (!Array.isArray(records)) return [];
+    return userId ? records.filter(r => r.userId === userId) : records;
+  }, [records, userId]);
+
   // If parent didn't pass records, fetch attendance collection for admin view
   useEffect(() => {
     if (Array.isArray(propRecords) && propRecords.length > 0) {
@@ -27,36 +34,47 @@ export default function AttendanceCalendar({ records: propRecords, userId }) {
     let cancelled = false;
 
     (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const snap = await getDocs(collection(db, "attendance"));
-        if (cancelled) return;
-        const data = snap.docs.map((d) => {
-          const dd = d.data();
-          return {
-            id: d.id,
-            userId: dd.userId,
-            userName: dd.userName || dd.user || dd.name || "Unknown",
-            date: dd.date || "",
-            checkIn: dd.checkInTime || dd.checkIn || null,
-            checkOut: dd.checkOutTime || dd.checkOut || null,
-            status: dd.status || (dd.checkInTime ? "present" : "absent"),
-            totalMinutes: typeof dd.totalMinutes === "number" ? dd.totalMinutes : (dd.totalMinutes === 0 ? 0 : (dd.minutes || dd.durationMinutes || null)),
-            raw: dd
-          };
-        });
+  setLoading(true);
+  setError(null);
 
-        // optional filter by user
-        const final = userId ? data.filter(r => r.userId === userId) : data;
-        setRecords(final);
-      } catch (err) {
-        console.error("🔥 Attendance fetch error:", err);
-        setError(err?.message || String(err));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+  try {
+    const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+    const token = stored.idToken;
+
+    if (!token) throw new Error("No idToken available");
+
+    // ✅ REST fetch (iOS SAFE)
+    const rows = await fetchCollectionREST("attendance", token);
+
+    if (cancelled) return;
+
+    const data = (rows || []).map((dd) => ({
+      id: dd.id,
+      userId: dd.userId,
+      userName: dd.userName || dd.user || dd.name || "Unknown",
+      date: dd.date || "",
+      checkIn: dd.checkInTime || dd.checkIn || null,
+      checkOut: dd.checkOutTime || dd.checkOut || null,
+      status: dd.status || (dd.checkInTime ? "present" : "absent"),
+      totalMinutes:
+        typeof dd.totalMinutes === "number"
+          ? dd.totalMinutes
+          : dd.totalMinutes === 0
+          ? 0
+          : dd.minutes || dd.durationMinutes || null,
+      raw: dd,
+    }));
+
+    setRecords(data);
+  } catch (e) {
+    if (!cancelled) {
+      console.error("attendance load failed", e);
+      setError("Failed to load attendance");
+    }
+  } finally {
+    if (!cancelled) setLoading(false);
+  }
+})();
 
     return () => { cancelled = true; };
   }, [propRecords, userId]);
@@ -95,13 +113,13 @@ export default function AttendanceCalendar({ records: propRecords, userId }) {
           </thead>
 
           <tbody>
-            {records.length === 0 && !loading && (
+            {memoizedRecords.length === 0 && !loading && (
               <tr>
                 <td colSpan={6} style={{ textAlign: "center", padding: 20 }}>No records found</td>
               </tr>
             )}
 
-            {records.map((rec) => (
+            {memoizedRecords.map((rec) => (
               <tr key={rec.id || `${rec.userId}_${rec.date}`}>
                 <td>{rec.userName || rec.userId || "Unknown"}</td>
                 <td>{rec.date || (rec.raw && rec.raw.date) || ""}</td>

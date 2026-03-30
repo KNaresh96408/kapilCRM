@@ -1,5 +1,5 @@
-import { db } from "../firebaseConfig";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { db, serverTimestamp } from "../firebaseConfig";
+import { collection, addDoc } from "firebase/firestore";
 import { buildSalesOrder } from "./buildSalesOrder";
 
 export async function createSalesOrder(deal) {

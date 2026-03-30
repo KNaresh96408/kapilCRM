@@ -25,14 +25,45 @@ body {
   margin: 0 !important;
   padding: 0 !important;
   width: 100% !important;
-  min-height: 100vh !important;
-  height: auto !important;
+  min-height: 100dvh !important;
+  height: 100% !important;
   overflow-y: auto !important;
   overflow-x: hidden !important;
   background: #ffffff !important;
 
   /* 🔥 Ensure Inter is applied everywhere */
   font-family: "Inter", system-ui, Avenir, Helvetica, Arial, sans-serif;
+
+}
+
+/* ERP Thin Row Table Style (applies across modules) */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table thead tr {
+  background: #800000;
+}
+
+table thead th {
+  font-weight: 700;
+  color: #fff;
+  background: #800000;
+  text-align: left;
+  vertical-align: middle;
+}
+
+table th,
+table td {
+  border-bottom: 1px solid #ececec;
+  text-align: left;
+  vertical-align: middle;
+  padding: 10px 12px;
+}
+
+table tbody td {
+  color: #333;
 }
 
 h1 {

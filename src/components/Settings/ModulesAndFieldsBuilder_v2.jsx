@@ -1,14 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { db } from "../../firebaseConfig";
 import {
-  collection,
-  getDocs,
   doc,
   setDoc,
   getDoc,
-  updateDoc,
+  updateDoc
 } from "firebase/firestore";
-
+import { fetchCollectionREST } from "../helpers/firestoreRest";
 // ModulesAndFieldsBuilder_v2.jsx
 // Upgraded builder with multi-layout support: Create / Detail / Quick Create
 // Place at: src/components/Settings/ModulesAndFieldsBuilder_v2.jsx
@@ -50,17 +48,27 @@ export default function ModulesAndFieldsBuilderV2({ onClose }) {
     loadModules();
   }, []);
 
-  useEffect(() => {
-    if (selectedModule) loadModuleLayout(selectedModule.id);
-  }, [selectedModule, activeLayout]);
-
   const loadModules = async () => {
-    const q = await getDocs(collection(db, "crm_modules"));
-    const arr = [];
-    q.forEach((d) => arr.push({ id: d.id, ...d.data() }));
-    setModules(arr);
-  };
+  try {
+    // 🔐 get idToken
+    const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+    const token = stored.idToken;
 
+    if (!token) {
+      console.warn("No idToken found for loadModules");
+      setModules([]);
+      return;
+    }
+
+    // 🔥 REST fetch (iOS safe)
+    const modules = await fetchCollectionREST("crm_modules", token);
+
+    setModules(modules || []);
+  } catch (err) {
+    console.error("Failed to load crm_modules", err);
+    setModules([]);
+  }
+};
   const loadModuleLayout = async (moduleId) => {
     const ref = doc(db, "crm_fields", moduleId);
     const snap = await getDoc(ref);

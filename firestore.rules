@@ -8,25 +8,209 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isPrivilegedAdminUid() {
+      return request.auth != null &&
+        request.auth.uid == "26VHcREEDMMg8C24kXYVGzRXHe43";
+    }
+
     function authRole() {
-      return request.auth != null ? request.auth.token.role : null;
+      return request.auth == null
+        ? null
+        : isPrivilegedAdminUid()
+          ? "admin"
+          : request.auth.token.role;
+    }
+
+    function hasText(v) {
+      return v is string && v.matches('(?s).*\\S.*');
+    }
+
+    function userDocData() {
+      let userPath = /databases/$(database)/documents/Users/$(request.auth.uid);
+      return request.auth != null && exists(userPath) ? get(userPath).data : {};
+    }
+
+    function userDocRole() {
+      let d = userDocData();
+      return hasText(d.role)
+        ? d.role
+        : hasText(d.Role)
+          ? d.Role
+          : hasText(d.userRole)
+            ? d.userRole
+            : hasText(d.user_role)
+              ? d.user_role
+          : hasText(d.designation)
+            ? d.designation
+            : hasText(d.Designation)
+              ? d.Designation
+              : hasText(d.employeeRole)
+                ? d.employeeRole
+                : hasText(d.employee_role)
+                  ? d.employee_role
+              : d.profile is map && hasText(d.profile.role)
+                ? d.profile.role
+                : d.profile is map && hasText(d.profile.Role)
+                  ? d.profile.Role
+                  : d.profile is map && hasText(d.profile.designation)
+                    ? d.profile.designation
+                    : d.profile is map && hasText(d.profile.Designation)
+                      ? d.profile.Designation
+                  : null;
+    }
+
+    function effectiveRole() {
+      let tokenRole = authRole();
+      return hasText(tokenRole)
+        ? tokenRole
+        : userDocRole();
+    }
+
+    function roleMatches(r, pattern) {
+      return r is string && r.matches(pattern);
+    }
+
+    function isEmployeeManagerRole() {
+      let r = effectiveRole();
+      return isAuthenticated() && (
+        roleMatches(r, '(?i)^\\s*admin\\s*$') ||
+        roleMatches(r, '(?i)^\\s*sales[ _-]?head\\s*$') ||
+        roleMatches(r, '(?i)^\\s*director\\s*$') ||
+        roleMatches(r, '(?i)^\\s*dgm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*agm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*hr[ _-]?executive\\s*$') ||
+        roleMatches(r, '(?i)^\\s*hr\\s*$') ||
+        roleMatches(r, '(?i)^\\s*human[ _-]?resources?\\s*$') ||
+        roleMatches(r, '(?i)^\\s*hr[ _-]?operations?[ _-]?manager\\s*$')
+      );
     }
 
     function authPermissions() {
       return request.auth != null ? request.auth.token.permissions : [];
     }
 
+    function userDocPermissions() {
+      let d = userDocData();
+      return d.permissions is list ? d.permissions : [];
+    }
+
     function hasPermission(p) {
-      return authPermissions().hasAny([p]);
+      return authPermissions().hasAny([p]) ||
+        userDocPermissions().hasAny([p]);
     }
 
     function isKapilUser() {
       return isAuthenticated();
     }
 
+    function isOperationsTeamUser() {
+      let r = effectiveRole();
+      let d = userDocData();
+      let belongsTo = d.belongsTo is string
+        ? d.belongsTo
+        : d.belongs_to is string
+          ? d.belongs_to
+          : d.team is string
+            ? d.team
+            : "";
+
+      let isRooftop = roleMatches(belongsTo, '(?i).*roof[ _-]?top.*');
+
+      return !isRooftop && (
+        roleMatches(r, '(?i)^\\s*operations[ _-]?(manager|executive)\\s*$') ||
+        roleMatches(belongsTo, '(?i).*operations.*')
+      );
+    }
+    function canUsePaymentReceivables() {
+      let r = effectiveRole();
+      return isAuthenticated() && (
+        roleMatches(r, '(?i)^\\s*admin\\s*$') ||
+        roleMatches(r, '(?i)^\\s*sales[ _-]?head\\s*$') ||
+        roleMatches(r, '(?i)^\\s*director\\s*$') ||
+        roleMatches(r, '(?i)^\\s*firector\\s*$') ||
+        roleMatches(r, '(?i)^\\s*dgm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*accountant\\s*$')
+      );
+    }
+
+    function canUseBooksSalesDocs() {
+      let r = effectiveRole();
+      return isAuthenticated() && (
+        roleMatches(r, '(?i)^\\s*admin\\s*$') ||
+        roleMatches(r, '(?i)^\\s*sales[ _-]?head\\s*$') ||
+        roleMatches(r, '(?i)^\\s*director\\s*$') ||
+        roleMatches(r, '(?i)^\\s*firector\\s*$') ||
+        roleMatches(r, '(?i)^\\s*dgm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*accountant\\s*$') ||
+        roleMatches(r, '(?i)^\\s*operations?[ _-]?manager\\s*$') ||
+        roleMatches(r, '(?i)^\\s*operations?[ _-]?executive\\s*$')
+      );
+    }
+
+    function canUsePurchaseDocs() {
+      let r = effectiveRole();
+      return isAuthenticated() && (
+        roleMatches(r, '(?i)^\\s*admin\\s*$') ||
+        roleMatches(r, '(?i)^\\s*dgm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*accountant\\s*$') ||
+        roleMatches(r, '(?i)^\\s*sales[ _-]?head\\s*$') ||
+        roleMatches(r, '(?i)^\\s*operations?[ _-]?manager\\s*$') ||
+        roleMatches(r, '(?i)^\\s*operations?[ _-]?executive\\s*$') ||
+        roleMatches(r, '(?i)^\\s*director\\s*$') ||
+        roleMatches(r, '(?i)^\\s*firector\\s*$')
+      );
+    }
+
+    function canUseBooksModule() {
+      let r = effectiveRole();
+      return isAuthenticated() && (
+        roleMatches(r, '(?i)^\\s*admin\\s*$') ||
+        roleMatches(r, '(?i)^\\s*sales[ _-]?head\\s*$') ||
+        roleMatches(r, '(?i)^\\s*director\\s*$') ||
+        roleMatches(r, '(?i)^\\s*firector\\s*$') ||
+        roleMatches(r, '(?i)^\\s*dgm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*agm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*operations?[ _-]?manager\\s*$') ||
+        roleMatches(r, '(?i)^\\s*operations?[ _-]?executive\\s*$')
+      );
+    }
+
+    function isFinanceApprover() {
+      let r = effectiveRole();
+      return isAuthenticated() && (
+        roleMatches(r, '(?i)^\\s*admin\\s*$') ||
+        roleMatches(r, '(?i)^\\s*dgm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*agm\\s*$') ||
+        roleMatches(r, '(?i)^\\s*director\\s*$') ||
+        roleMatches(r, '(?i)^\\s*firector\\s*$') ||
+        roleMatches(r, '(?i)^\\s*sales[ _-]?head\\s*$')
+      );
+    }
+
     // 🔥 Added for system delete of duplicate deal docs
     function isSystemCleanup() {
       return request.resource.data._systemDelete == true;
+    }
+
+    function nonEmptyString(v) {
+      return v is string && v.matches('(?s).*\\S.*');
+    }
+
+    function canonicalDealIdFromRequest() {
+      return nonEmptyString(request.resource.data.kpiId)
+        ? request.resource.data.kpiId
+        : nonEmptyString(request.resource.data.autoId)
+          ? request.resource.data.autoId
+          : null;
+    }
+
+    function isCanonicalDealWrite(dealId) {
+      let canonical = canonicalDealIdFromRequest();
+      let auto = request.resource.data.autoId;
+      let kpi = request.resource.data.kpiId;
+
+      return (canonical == null || canonical == dealId) &&
+        !(nonEmptyString(auto) && nonEmptyString(kpi) && auto != kpi);
     }
 
     // ============================================================
@@ -36,11 +220,52 @@ service cloud.firestore {
       allow get, read: if isAuthenticated();
 
       allow update: if isAuthenticated() &&
-        (request.auth.uid == userId || authRole() == "admin");
+        (
+          request.auth.uid == userId ||
+          isEmployeeManagerRole() ||
+          hasPermission("Update") ||
+          hasPermission("Create")
+        );
 
-      allow create, delete: if isAuthenticated() &&
-        authRole() == "admin";
+      allow create: if isAuthenticated() &&
+        (isEmployeeManagerRole() || hasPermission("Create"));
+
+      allow delete: if isAuthenticated() &&
+        isEmployeeManagerRole();
     }
+
+    // ============================================================
+    // ORGANIZATION MASTER DATA
+    // ============================================================
+    match /sales_zones/{zoneId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated() &&
+        isEmployeeManagerRole();
+    }
+
+    match /sales_areas/{areaId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAuthenticated() &&
+        isEmployeeManagerRole();
+    }
+    // ============================================================
+// PASSWORD RESET OTPs (FORGOT PASSWORD)
+// ============================================================
+match /password_otps/{otpId} {
+  // 🔓 Allow OTP creation without login
+  allow create: if true;
+
+  // 🔒 Only logged-in users (admin/backend) can read
+  allow read: if request.auth != null;
+
+  // ❌ No updates allowed
+  allow update: if false;
+
+  // 🧹 Allow delete only for admin cleanup
+  allow delete: if request.auth != null &&
+    authRole() == "admin";
+}
+
 
     // ============================================================
     // LEADS
@@ -65,9 +290,10 @@ match /deals/{id} {
   allow read: if isAuthenticated();
 
   allow create, update: if isAuthenticated() &&
+    isCanonicalDealWrite(id) &&
     (hasPermission("Create") ||
      hasPermission("Update") ||
-     authRole() in ["admin", "sales", "telesales"] ||
+     authRole() in ["admin", "sales", "telesales", "consultant"] ||
      isKapilUser());
 
   // FIX: allow delete OR allow duplicate cleanup
@@ -75,12 +301,128 @@ match /deals/{id} {
     resource.data._systemDelete == true;
 }
 
+    // Notifications collection — client creates/reads notifications,
+    // server (admin/sales) may update/delete.
+    match /notifications/{nid} {
+      function onlyNotificationStateFieldsChanged() {
+        return request.resource.data.diff(resource.data).changedKeys().hasOnly(['active', 'read', 'readAt', 'seenAt']) &&
+          (!request.resource.data.diff(resource.data).changedKeys().hasAny(['active']) || request.resource.data.active is bool) &&
+          (!request.resource.data.diff(resource.data).changedKeys().hasAny(['read']) || request.resource.data.read is bool);
+      }
+
+      function isNotificationRecipient() {
+        return (
+          (resource.data.toUserId is string && resource.data.toUserId == request.auth.uid) ||
+          (resource.data.toUid is string && resource.data.toUid == request.auth.uid) ||
+          (resource.data.toEmail is string && request.auth.token.email is string && resource.data.toEmail == request.auth.token.email) ||
+          (resource.data.toEmails is list && request.auth.token.email is string && resource.data.toEmails.hasAny([request.auth.token.email])) ||
+          (
+            resource.data.toRole is string && (
+              resource.data.toRole == effectiveRole() ||
+              (
+                roleMatches(resource.data.toRole, '(?i)^\\s*tele[ _-]?sales\\s*$') &&
+                roleMatches(effectiveRole(), '(?i)^\\s*tele[ _-]?(sales|caller)\\s*$')
+              )
+            )
+          )
+        );
+      }
+
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        effectiveRole() in [
+          "admin",
+          "sales",
+          "telesales",
+          "consultant",
+          "dgm",
+          "agm",
+          "accountant",
+          "operations_manager",
+          "operations_executive",
+          "sales_head",
+          "state_head",
+          "zonal_manager",
+          "team_lead",
+          "director",
+          "hr",
+          "hr_executive"
+        ] ||
+        roleMatches(effectiveRole(), '(?i).*manager.*')
+      );
+
+      // Allow role owners to toggle `active` for notifications addressed to them,
+      // or allow the consultant assigned to the related deal to toggle.
+      allow update: if isAuthenticated() && (
+        // admins/sales can update freely
+        authRole() in ["admin", "sales"]
+
+        // OR direct recipient can toggle active/read state fields
+        || (
+          onlyNotificationStateFieldsChanged() &&
+          isNotificationRecipient()
+        )
+
+        // OR the user is the assigned consultant on the deal referenced by this notification
+        || (
+          onlyNotificationStateFieldsChanged() &&
+          resource.data.dealId != null &&
+          get(/databases/$(database)/documents/deals/$(resource.data.dealId)).data.assignedConsultant == request.auth.token.email &&
+          true
+        )
+      );
+
+      // Only admin/sales may delete notifications
+      allow delete: if isAuthenticated() && authRole() in ["admin", "sales"];
+    }
+
+    // ============================================================
+    // MEETINGS (INTERNAL AUDIO/VIDEO)
+    // ============================================================
+    match /meetings/{meetingId} {
+      function canCreateMeeting() {
+        let r = effectiveRole();
+        return isAuthenticated() && (
+          roleMatches(r, '(?i)^\\s*admin\\s*$') ||
+          roleMatches(r, '(?i)^\\s*sales[ _-]?head\\s*$') ||
+          roleMatches(r, '(?i)^\\s*state[ _-]?head\\s*$') ||
+          roleMatches(r, '(?i)^\\s*team[ _-]?lead\\s*$') ||
+          roleMatches(r, '(?i)^\\s*zonal[ _-]?manager\\s*$')
+        );
+      }
+
+      function canManageMeeting() {
+        let r = effectiveRole();
+        return isAuthenticated() && (
+          roleMatches(r, '(?i)^\\s*admin\\s*$') ||
+          roleMatches(r, '(?i)^\\s*sales[ _-]?head\\s*$') ||
+          roleMatches(r, '(?i)^\\s*director\\s*$') ||
+          roleMatches(r, '(?i)^\\s*dgm\\s*$') ||
+          roleMatches(r, '(?i)^\\s*agm\\s*$')
+        );
+      }
+
+      allow read: if isAuthenticated();
+      allow create: if canCreateMeeting();
+
+      allow update: if isAuthenticated() && (
+        canCreateMeeting() ||
+        canManageMeeting() ||
+        (resource.data.createdByUid is string && resource.data.createdByUid == request.auth.uid)
+      );
+
+      allow delete: if isAuthenticated() && (
+        canManageMeeting() ||
+        (resource.data.createdByUid is string && resource.data.createdByUid == request.auth.uid)
+      );
+    }
+
     match /paymentTargets/{doc} {
       allow read: if request.auth != null;
 
       allow write: if
-        request.auth.token.role == 'admin' ||
-        request.auth.token.role == 'sales_head';
+        authRole() == 'admin' ||
+        authRole() == 'sales_head';
     }
 
 
@@ -91,12 +433,63 @@ match /deals/{id} {
     match /salesOrders/{orderId} {
       allow read: if isAuthenticated();
 
-      allow create, update: if isAuthenticated() &&
-        (authRole() in ["admin", "sales", "telesales"] ||
-         isKapilUser());
+      allow create, update: if isAuthenticated();
 
       allow delete: if isAuthenticated() &&
-        authRole() == "admin";
+        effectiveRole() == "admin";
+    }
+    // ============================================================
+    // BOOKS PAYMENT RECEIVABLES
+    // ============================================================
+    match /books_payment_receivables/{recordId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isAuthenticated() && isFinanceApprover();
+
+      allow delete: if isAuthenticated() &&
+        effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // INVENTORY ITEMS
+    // ============================================================
+    match /inventoryItems/{itemId} {
+      allow read: if canUseBooksModule();
+      allow create, update: if canUseBooksModule();
+      allow delete: if isAuthenticated() && effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // INVENTORY VARIANTS
+    // ============================================================
+    match /inventoryVariants/{variantId} {
+      allow read: if canUseBooksModule();
+      allow create, update: if canUseBooksModule();
+      allow delete: if isAuthenticated() && effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // STOCK LEDGER
+    // ============================================================
+    match /stockLedger/{entryId} {
+      allow read: if canUseBooksModule();
+      allow create: if canUseBooksModule();
+      allow update, delete: if isAuthenticated() && effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // GRN RECORDS (BOOKS INVENTORY)
+    // ============================================================
+    match /records_grn/{recordId} {
+      allow read: if canUseBooksModule();
+      allow create, update: if canUseBooksModule();
+      allow delete: if isAuthenticated() && effectiveRole() == "admin";
+    }
+
+    match /grns/{grnId} {
+      allow read: if canUseBooksModule();
+      allow create, update: if canUseBooksModule();
+      allow delete: if isAuthenticated() && effectiveRole() == "admin";
     }
     // ============================================================
     // PROJECTS
@@ -117,14 +510,97 @@ match /deals/{id} {
     // INVOICES
     // ============================================================
     match /invoices/{invoiceId} {
-      allow read: if isAuthenticated();
+      allow read: if canUseBooksModule();
 
-      allow create, update: if isAuthenticated() &&
-        (authRole() in ["admin", "sales", "telesales"] ||
-         isKapilUser());
+      allow create, update: if canUseBooksModule();
 
       allow delete: if isAuthenticated() &&
-        authRole() == "admin";
+        effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // DELIVERY CHALLANS
+    // ============================================================
+    match /deliveryChallans/{dcId} {
+      allow read: if canUseBooksModule();
+
+      allow create, update: if canUseBooksModule();
+
+      allow delete: if isAuthenticated() &&
+        effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // CREDIT NOTES
+    // ============================================================
+    match /creditNotes/{creditNoteId} {
+      allow read: if canUseBooksModule();
+
+      allow create, update: if canUseBooksModule();
+
+      allow delete: if isAuthenticated() &&
+        effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // PURCHASE - PI UPLOADS
+    // ============================================================
+    match /pis/{piId} {
+      allow read: if canUseBooksModule();
+      allow create, update: if canUseBooksModule();
+      allow delete: if isAuthenticated() && effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // PURCHASE - MATERIAL PO
+    // ============================================================
+    match /purchaseOrders/{poId} {
+      allow read: if canUseBooksModule();
+      allow create: if canUseBooksModule();
+
+      allow update: if canUseBooksModule() && (
+        isFinanceApprover() ||
+        !request.resource.data.diff(resource.data).changedKeys().hasAny([
+          'status',
+          'approved',
+          'approvedBy',
+          'approvedAt',
+          'approvalReason'
+        ])
+      );
+
+      allow delete: if isAuthenticated() && effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // PURCHASE - SERVICE PO
+    // ============================================================
+    match /servicePurchaseOrders/{poId} {
+      allow read: if canUseBooksModule();
+      allow create: if canUseBooksModule();
+      allow update: if canUseBooksModule() && (
+        isFinanceApprover() ||
+        !request.resource.data.diff(resource.data).changedKeys().hasAny([
+          'status',
+          'approved',
+          'approvedBy',
+          'approvedAt',
+          'approvalReason'
+        ])
+      );
+      allow delete: if isAuthenticated() && effectiveRole() == "admin";
+    }
+
+    // ============================================================
+    // PURCHASE COUNTERS / CONFIG
+    // ============================================================
+    match /poCounters/{counterId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /purchaseConfig/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && effectiveRole() == "admin";
     }
     // ============================================================
     // QUOTATION TEMPLATES
@@ -197,8 +673,12 @@ match /attendanceSettings/{docId} {
 
   function isAdmin() {
     return request.auth != null &&
-      request.auth.token.role in [
+      authRole() in [
         "admin",
+        "director",
+        "dgm",
+        "agm",
+        "hr_executive",
         "state_head",
         "sales_head",
         "zonal_manager"
@@ -226,34 +706,34 @@ match /attendanceSettings/{docId} {
 
       allow list: if isAuthenticated();
 
-      allow get: if isAuthenticated() &&
-        (resource.data.userId == request.auth.uid ||
-         authRole() in [
-           "admin",
-           "sales_head",
-           "state_head",
-           "zonal_manager",
-           "team_lead"
-         ]);
+      allow get: if isAuthenticated();
 
       allow create: if isAuthenticated() &&
         request.resource.data.userId == request.auth.uid;
 
-      allow update: if isAuthenticated() &&
-        authRole() in [
+      allow update: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        effectiveRole() in [
           "admin",
           "sales_head",
           "state_head",
           "zonal_manager",
-          "team_lead"
-        ];
+          "team_lead",
+          "director",
+          "dgm",
+          "agm",
+          "hr_executive",
+          "operations_manager"
+        ] ||
+        roleMatches(effectiveRole(), '(?i).*manager.*')
+      );
 
       allow delete: if isAuthenticated() &&
         authRole() == "admin";
     }
     match /holidays/{holidayId} {
   allow read: if request.auth != null;
-  allow create, update, delete: if request.auth != null && request.auth.token.role in ["admin","sales_head"];
+      allow create, update, delete: if request.auth != null && authRole() in ["admin"];
 }
     // ============================================================
     // CRM MODULES
@@ -261,10 +741,9 @@ match /attendanceSettings/{docId} {
     match /crm_modules/{moduleId} {
       allow read: if request.auth != null;
       allow create, update, delete: if request.auth != null &&
-        request.auth.token.role == "admin";
+        authRole() == "admin";
     }
-    
-                // ============================================================
+// ============================================================
 // MODULE PERMISSIONS  
 // ============================================================
 match /modulePermissions/{moduleName} {
@@ -286,7 +765,18 @@ match /modulePermissions/{moduleName} {
     match /crm_fields/{moduleId} {
       allow read: if request.auth != null;
       allow create, update, delete: if request.auth != null &&
-        request.auth.token.role == "admin";
+        authRole() == "admin";
+    }
+
+    // ============================================================
+    // ATTACHMENTS (KPI-ID library + folders + files)
+    // ============================================================
+    match /attachments_kpi/{kpiId} {
+      allow read, write: if isAuthenticated() && !isOperationsTeamUser();
+
+      match /{document=**} {
+        allow read, write: if isAuthenticated() && !isOperationsTeamUser();
+      }
     }
 
     // ============================================================
@@ -295,6 +785,63 @@ match /modulePermissions/{moduleName} {
     match /search_index/{id} {
       allow read: if request.auth != null;   // allow authenticated users
       allow write: if false;                 // no direct writes allowed
+    }
+
+    // ============================================================
+    // MAILBOXES (in-app mail)
+    // ============================================================
+    match /mailboxes/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      match /messages/{messageId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // ============================================================
+    // KAPIL CHAT (direct + group)
+    // ============================================================
+    match /chatThreads/{threadId} {
+      function threadHasCurrentUserFromRequest() {
+        return request.resource.data.memberIds is list &&
+          request.auth.uid in request.resource.data.memberIds;
+      }
+
+      function threadHasCurrentUserFromResource() {
+        return resource.data.memberIds is list &&
+          request.auth.uid in resource.data.memberIds;
+      }
+
+      // NOTE:
+      // Query/list on chatThreads with array-contains can still be rejected as
+      // PERMISSION_DENIED depending on client auth/session timing and rule evaluation.
+      // Keep per-document protection on get/update/delete, but allow authenticated list
+      // so the chat sidebar can load thread previews reliably.
+      allow list: if isAuthenticated();
+      allow get: if isAuthenticated() && threadHasCurrentUserFromResource();
+
+      allow create: if isAuthenticated() &&
+        threadHasCurrentUserFromRequest() &&
+        request.resource.data.type in ["dm", "group"];
+
+      allow update, delete: if isAuthenticated() && threadHasCurrentUserFromResource();
+
+      match /messages/{messageId} {
+        function parentThreadMember() {
+          let threadPath = /databases/$(database)/documents/chatThreads/$(threadId);
+          return exists(threadPath) &&
+            get(threadPath).data.memberIds is list &&
+            request.auth.uid in get(threadPath).data.memberIds;
+        }
+
+        allow read: if isAuthenticated() && parentThreadMember();
+
+        allow create: if isAuthenticated() &&
+          parentThreadMember() &&
+          request.resource.data.senderId == request.auth.uid;
+
+        allow update, delete: if isAuthenticated() && parentThreadMember();
+      }
     }
 
 // ============================================================

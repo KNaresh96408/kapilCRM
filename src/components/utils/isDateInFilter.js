@@ -3,7 +3,18 @@ import { getMonthNumber } from "./getMonthNumber";
 export const isDateInFilter = (firebaseDate, filters) => {
   if (!firebaseDate) return false;
 
-  const d = firebaseDate.toDate();
+  let d;
+  if (firebaseDate?.toDate) {
+    d = firebaseDate.toDate();
+  } else if (firebaseDate?.seconds) {
+    d = new Date(firebaseDate.seconds * 1000);
+  } else if (firebaseDate instanceof Date) {
+    d = firebaseDate;
+  } else {
+    d = new Date(firebaseDate);
+  }
+
+  if (isNaN(d.getTime())) return false;
   const monthNo = getMonthNumber(filters.month);
 
   // ✅ 1️⃣ Custom Date Highest Priority

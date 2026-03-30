@@ -1,8 +1,197 @@
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
+import { doc, setDoc, updateDoc } from "firebase/firestore";
 import { db, storage } from "../../firebase/firebaseConfig";
 import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+
+const IMAGE_MAX_DIMENSION = 1600;
+const IMAGE_TARGET_SIZE_KB = 220;
+const IMAGE_MIN_QUALITY = 0.45;
+const VIDEO_MAX_DIMENSION = 960;
+const VIDEO_TARGET_BITRATE = 350_000;
+const VIDEO_FPS = 15;
+const VIDEO_COMPRESS_TIMEOUT_MS = 15_000;
+const RECOMMENDED_VIDEO_SIZE_MB = 80;
+
+const formatBytes = (bytes) => {
+  const value = Number(bytes || 0);
+  if (!value) return "0 KB";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+};
+
+const toSafeFileName = (name = "") => {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return "file";
+  return trimmed.replace(/[^a-zA-Z0-9._-]/g, "_");
+};
+
+const readImageFile = (file) => new Promise((resolve, reject) => {
+  const img = new Image();
+  img.onload = () => resolve(img);
+  img.onerror = (e) => reject(e);
+  img.src = URL.createObjectURL(file);
+});
+
+const canvasToBlob = (canvas, mimeType, quality) => new Promise((resolve, reject) => {
+  canvas.toBlob(
+    (blob) => (blob ? resolve(blob) : reject(new Error("image_blob_failed"))),
+    mimeType,
+    quality
+  );
+});
+
+const compressImageFile = async (file) => {
+  if (!file || !String(file.type || "").startsWith("image/")) return file;
+
+  const image = await readImageFile(file);
+  const ratio = Math.min(
+    1,
+    IMAGE_MAX_DIMENSION / Math.max(image.width || 1, image.height || 1)
+  );
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.floor((image.width || 1) * ratio));
+  canvas.height = Math.max(1, Math.floor((image.height || 1) * ratio));
+
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) return file;
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  URL.revokeObjectURL(image.src);
+
+  const targetBytes = IMAGE_TARGET_SIZE_KB * 1024;
+  const mimeType = "image/jpeg";
+  let quality = 0.86;
+  let bestBlob = await canvasToBlob(canvas, mimeType, quality);
+
+  while (bestBlob.size > targetBytes && quality > IMAGE_MIN_QUALITY) {
+    quality = Math.max(IMAGE_MIN_QUALITY, quality - 0.08);
+    bestBlob = await canvasToBlob(canvas, mimeType, quality);
+    if (quality === IMAGE_MIN_QUALITY) break;
+  }
+
+  if (bestBlob.size >= file.size) return file;
+
+  const compressedName = `${toSafeFileName(file.name).replace(/\.[^.]+$/, "") || "image"}.jpg`;
+  return new File([bestBlob], compressedName, {
+    type: mimeType,
+    lastModified: Date.now(),
+  });
+};
+
+const buildUploadName = (fallbackName, file) => {
+  const original = String(file?.name || "").trim();
+  const ext = original.includes(".") ? original.split(".").pop() : "";
+  const fallbackExt = String(fallbackName || "").includes(".")
+    ? String(fallbackName).split(".").pop()
+    : "";
+  const safeExt = (ext || fallbackExt || "bin").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const stem = String(fallbackName || "file").replace(/\.[^.]+$/, "");
+  return `${toSafeFileName(stem)}.${safeExt || "bin"}`;
+};
+
+const selectMediaRecorderMimeType = () => {
+  if (typeof window === "undefined" || typeof window.MediaRecorder === "undefined") return "";
+  const options = [
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+    "video/mp4",
+  ];
+  return options.find((x) => window.MediaRecorder.isTypeSupported?.(x)) || "";
+};
+
+const compressVideoFile = async (file) => {
+  if (!file || !String(file.type || "").startsWith("video/")) return file;
+  if (typeof window === "undefined" || typeof document === "undefined") return file;
+  if (typeof window.MediaRecorder === "undefined") return file;
+
+  const mimeType = selectMediaRecorderMimeType();
+  if (!mimeType) return file;
+
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const video = document.createElement("video");
+    video.src = objectUrl;
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = () => resolve();
+      video.onerror = () => reject(new Error("video_metadata_failed"));
+    });
+
+    const srcW = Math.max(1, Number(video.videoWidth || 1));
+    const srcH = Math.max(1, Number(video.videoHeight || 1));
+    const ratio = Math.min(1, VIDEO_MAX_DIMENSION / Math.max(srcW, srcH));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(2, Math.floor(srcW * ratio));
+    canvas.height = Math.max(2, Math.floor(srcH * ratio));
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) return file;
+
+    const stream = canvas.captureStream(VIDEO_FPS);
+    const chunks = [];
+
+    const recorder = new MediaRecorder(stream, {
+      mimeType,
+      videoBitsPerSecond: VIDEO_TARGET_BITRATE,
+    });
+
+    const recordingDone = new Promise((resolve, reject) => {
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+      };
+      recorder.onerror = () => reject(new Error("video_record_failed"));
+      recorder.onstop = () => resolve();
+    });
+
+    let rafId = 0;
+    const draw = () => {
+      if (video.paused || video.ended) return;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      rafId = window.requestAnimationFrame(draw);
+    };
+
+    const finished = new Promise((resolve) => {
+      video.onended = () => resolve();
+    });
+
+    recorder.start(1000);
+    await video.play();
+    draw();
+
+    await Promise.race([
+      finished,
+      new Promise((resolve) => setTimeout(resolve, VIDEO_COMPRESS_TIMEOUT_MS)),
+    ]);
+
+    window.cancelAnimationFrame(rafId);
+    if (recorder.state !== "inactive") recorder.stop();
+    await recordingDone;
+
+    if (!chunks.length) return file;
+
+    const blob = new Blob(chunks, { type: mimeType });
+    if (!blob.size || blob.size >= file.size) return file;
+
+    const ext = mimeType.includes("webm") ? "webm" : "mp4";
+    const compressedName = `${toSafeFileName(file.name).replace(/\.[^.]+$/, "") || "video"}.${ext}`;
+    return new File([blob], compressedName, {
+      type: mimeType,
+      lastModified: Date.now(),
+    });
+  } catch {
+    return file;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+};
 
 
 
@@ -83,6 +272,9 @@ useEffect(() => {
   });
 
   const [errors, setErrors] = useState({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitStatus, setSubmitStatus] = useState("");
+  const [sizeSummary, setSizeSummary] = useState([]);
 
   // ---------------- VALIDATION ----------------
   const validateForm = () => {
@@ -138,6 +330,8 @@ useEffect(() => {
   // ---------------- SUBMIT ----------------
 const submitSurvey = async () => {
 
+  if (isSubmitting) return;
+
   if (!validateForm()) {
     alert("Please complete all required fields");
     return;
@@ -146,35 +340,81 @@ const submitSurvey = async () => {
   if (!window.confirm("Submit Survey? You cannot edit after submitting")) return;
 
   try {
+    setIsSubmitting(true);
+    setSubmitStatus("Preparing files...");
+    setSizeSummary([]);
+
+    const fileQueue = [
+      ["north", form.north, "north.jpg"],
+      ["south", form.south, "south.jpg"],
+      ["east", form.east, "east.jpg"],
+      ["west", form.west, "west.jpg"],
+      ["handSketch", form.handSketch, "handSketch.jpg"],
+      ["inverter", form.inverter, "inverter.jpg"],
+      ["meter", form.meter, "meter.jpg"],
+      ["earthing", form.earthing, "earthing.jpg"],
+      ["outside", form.outside, "outside.jpg"],
+      ["powerBill", form.powerBill, "powerBill.jpg"],
+      ["rooftopVideo", form.rooftopVideo, "roofVideo.mp4"],
+    ];
+
+    const preparedEntries = [];
+    let videoCompressed = false;
+    for (const [key, originalFile, fallbackName] of fileQueue) {
+      if (!originalFile) continue;
+      let processedFile = originalFile;
+      if (String(originalFile.type || "").startsWith("image/")) {
+        processedFile = await compressImageFile(originalFile);
+      } else if (String(originalFile.type || "").startsWith("video/")) {
+        setSubmitStatus("Compressing video...");
+        processedFile = await compressVideoFile(originalFile);
+        videoCompressed = processedFile.size < originalFile.size;
+      }
+      preparedEntries.push({
+        key,
+        originalFile,
+        file: processedFile,
+        uploadName: buildUploadName(fallbackName, processedFile),
+      });
+    }
+
+    const summary = preparedEntries
+      .filter((x) => String(x.originalFile?.type || "").startsWith("image/"))
+      .map((x) => ({
+        key: x.key,
+        before: Number(x.originalFile?.size || 0),
+        after: Number(x.file?.size || 0),
+      }));
+    const videoEntry = preparedEntries.find((x) => x.key === "rooftopVideo");
+    if (videoEntry) {
+      summary.push({
+        key: videoCompressed ? "rooftopVideo (compressed)" : "rooftopVideo (original)",
+        before: Number(videoEntry.originalFile?.size || 0),
+        after: Number(videoEntry.file?.size || 0),
+      });
+    }
+    setSizeSummary(summary);
+
     const basePath = `deals/${dealId}/attachments/siteSurveyReport`;
+    const surveyReportUrl = `https://crm.kapilpower.com/#/survey-report/${dealId}`;
 
-    const uploads = {};
-
-    // Upload mandatory images
-    uploads.north = await uploadFile(`${basePath}/north.jpg`, form.north);
-    uploads.south = await uploadFile(`${basePath}/south.jpg`, form.south);
-    uploads.east = await uploadFile(`${basePath}/east.jpg`, form.east);
-    uploads.west = await uploadFile(`${basePath}/west.jpg`, form.west);
-
-    // Additional
-    uploads.handSketch = await uploadFile(`${basePath}/handSketch.jpg`, form.handSketch);
-    uploads.inverter = await uploadFile(`${basePath}/inverter.jpg`, form.inverter);
-    uploads.meter = await uploadFile(`${basePath}/meter.jpg`, form.meter);
-    uploads.earthing = await uploadFile(`${basePath}/earthing.jpg`, form.earthing);
-    uploads.outside = await uploadFile(`${basePath}/outside.jpg`, form.outside);
-
-    // Power Bill
-    uploads.powerBill = await uploadFile(`${basePath}/powerBill.jpg`, form.powerBill);
-
-    // Video
-    uploads.rooftopVideo = await uploadFile(`${basePath}/roofVideo.mp4`, form.rooftopVideo);
+    setSubmitStatus("Uploading files (optimized)...");
+    const uploadPairs = await Promise.all(
+      preparedEntries.map(async ({ key, file, uploadName }) => {
+        const url = await uploadFile(`${basePath}/${uploadName}`, file);
+        return [key, url];
+      })
+    );
+    const uploads = Object.fromEntries(uploadPairs);
 
     // Save to Firestore
     // Save to Firestore
+setSubmitStatus("Saving survey data...");
 await updateDoc(doc(db, "deals", dealId), {
   siteSurveyStatus: "completed",
   siteSurveyCompletedOn: Date.now(),
   siteSurveyToken: null,
+  siteSurveyLink: surveyReportUrl,
 
   // Store file links
   siteSurveyFiles: uploads,
@@ -197,7 +437,12 @@ await setDoc(
   doc(db, "deals", dealId, "attachments", "siteSurveyReport"),
   {
     name: "Site Survey Report",
-    type: "report",
+    title: "Site Survey Report",
+    type: "siteSurvey",
+    category: "Site Survey Documents",
+    folderName: "Site Survey Documents",
+    url: surveyReportUrl,
+    source: "siteSurvey",
     createdAt: Date.now(),
     submittedBy: autoInfo.consultant || "Consultant",
 
@@ -212,12 +457,43 @@ await setDoc(
   }
 );
 
+await setDoc(
+  doc(db, "deals", dealId, "attachments", "siteSurveyFormPrint"),
+  {
+    title: "Site Survey Form Print",
+    type: "siteSurveyPrint",
+    category: "Site Survey Documents",
+    folderName: "Site Survey Documents",
+    url: surveyReportUrl,
+    source: "siteSurvey",
+    formData: {
+      ...form,
+      powerBill: undefined,
+      north: undefined,
+      south: undefined,
+      east: undefined,
+      west: undefined,
+      handSketch: undefined,
+      inverter: undefined,
+      meter: undefined,
+      earthing: undefined,
+      outside: undefined,
+      rooftopVideo: undefined,
+    },
+    createdAt: Date.now(),
+  },
+  { merge: true }
+);
+
     alert("Survey Submitted Successfully 🎉");
     window.location.href = "/site-survey/completed";
 
   } catch (err) {
     console.error(err);
     alert("Upload Failed ❌");
+  } finally {
+    setIsSubmitting(false);
+    setSubmitStatus("");
   }
 };
 
@@ -288,6 +564,9 @@ await setDoc(
               style={{ ...fileInput, ...(errors.powerBill && errorStyle) }}
               onChange={(e)=>setForm({...form, powerBill:e.target.files[0]})}
             />
+            {form.powerBill && (
+              <small style={fileMetaText}>Selected: {formatBytes(form.powerBill.size)}</small>
+            )}
             {errors.powerBill && <ErrorText />}
           </section>
 
@@ -371,6 +650,7 @@ await setDoc(
                     style={{ marginTop: 6, ...(errors[d] && errorStyle) }}
                     onChange={(e)=>setForm({...form, [d]:e.target.files[0]})}
                   />
+                  {form[d] && <small style={fileMetaText}>Selected: {formatBytes(form[d].size)}</small>}
                   {errors[d] && <ErrorText />}
                 </div>
               ))}
@@ -393,6 +673,7 @@ await setDoc(
                     style={{ marginTop: 6, ...(errors[key] && errorStyle) }}
                     onChange={(e)=>setForm({...form, [key]:e.target.files[0]})}
                   />
+                  {form[key] && <small style={fileMetaText}>Selected: {formatBytes(form[key].size)}</small>}
                   {errors[key] && <ErrorText />}
                 </div>
               ))}
@@ -405,14 +686,31 @@ await setDoc(
               style={{ ...fileInput, ...(errors.rooftopVideo && errorStyle) }}
               onChange={(e)=>setForm({...form, rooftopVideo:e.target.files[0]})}
             />
+            {form.rooftopVideo && (
+              <small style={fileMetaText}>Selected: {formatBytes(form.rooftopVideo.size)} (auto-compress enabled, recommended &lt; {RECOMMENDED_VIDEO_SIZE_MB} MB)</small>
+            )}
             {errors.rooftopVideo && <ErrorText />}
           </section>
 
           {/* ================= SUBMIT ================= */}
           <section style={sectionBox}>
-            <button onClick={submitSurvey} style={submitBtn}>
-              Submit Site Survey
+            <button onClick={submitSurvey} style={submitBtn} disabled={isSubmitting}>
+              {isSubmitting ? "Submitting..." : "Submit Site Survey"}
             </button>
+            {!!submitStatus && <p style={statusText}>{submitStatus}</p>}
+
+            {sizeSummary.length > 0 && (
+              <div style={sizeSummaryBox}>
+                <b style={{ color: "#0f5132" }}>Image size converter (before → optimized):</b>
+                <ul style={{ margin: "8px 0 0 16px" }}>
+                  {sizeSummary.map((item) => (
+                    <li key={item.key}>
+                      {item.key}: {formatBytes(item.before)} → {formatBytes(item.after)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </section>
 
         </div>
@@ -538,6 +836,29 @@ const uploadCard = {
   borderRadius:"10px",
   padding:"10px",
   background:"#fafafa"
+};
+
+const fileMetaText = {
+  display: "block",
+  marginTop: 6,
+  color: "#555",
+  fontSize: 12,
+};
+
+const statusText = {
+  marginTop: 10,
+  color: "#0b5ed7",
+  fontWeight: 600,
+};
+
+const sizeSummaryBox = {
+  marginTop: 10,
+  padding: 10,
+  borderRadius: 8,
+  border: "1px solid #badbcc",
+  background: "#d1e7dd",
+  color: "#0f5132",
+  fontSize: 13,
 };
 
 const submitBtn = {

@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../../firebase/firebaseConfig";
+import { getDocsWithFallback } from "../../../helpers/firestoreFetch";
 import { useDashboardFilters } from "../../../context/DashboardFilterContext";
 import { isDateInFilter } from "../../utils/isDateInFilter";
 import { getScopedQuery } from "../../../helpers/getScopedQuery";
@@ -37,10 +36,10 @@ export default function TelecallersPerformance() {
 
     // ---------- LEADS ----------
     const q = await getScopedQuery("leads");
-const leadsSnap = await getDocs(q);
+    const leadRows = await getDocsWithFallback(q, "leads", null);
 
-    leadsSnap.forEach(doc => {
-      const l = doc.data();
+    leadRows.forEach((row) => {
+      const l = row.data || row;
 
       if (filters.zone !== "All" && (l.sales_zone || "") !== filters.zone) return;
       if (!isDateInFilter(l.createdAt, filters)) return;
@@ -53,9 +52,9 @@ const leadsSnap = await getDocs(q);
 
     // ---------- SALES ORDERS ----------
     const soQuery = await getScopedQuery("salesOrders");
-    const soSnap = await getDocs(soQuery);
-    soSnap.forEach(doc => {
-      const s = doc.data();
+    const soRows = await getDocsWithFallback(soQuery, "salesOrders", null);
+    soRows.forEach((row) => {
+      const s = row.data || row;
 
       if (filters.zone !== "All" && (s.sales_zone || "") !== filters.zone) return;
       if (!isDateInFilter(s.createdAt, filters)) return;

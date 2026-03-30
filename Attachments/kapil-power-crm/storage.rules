@@ -1,0 +1,39 @@
+rules_version = '2';
+
+// Allow read and write access to the user's own files
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /attachments/{userId}/{kpiId}/{subfolder}/{fileName} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    match /attachments/{userId}/{kpiId}/{subfolder} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    match /attachments/{userId}/{kpiId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    match /attachments/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Allow read access to all users for public files
+    match /attachments/public/{kpiId}/{subfolder}/{fileName} {
+      allow read: if true;
+    }
+    
+    match /attachments/public/{kpiId}/{subfolder} {
+      allow read: if true;
+    }
+    
+    match /attachments/public/{kpiId} {
+      allow read: if true;
+    }
+    
+    match /attachments/public {
+      allow read: if true;
+    }
+  }
+}

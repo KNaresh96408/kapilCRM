@@ -1,14 +1,26 @@
-import React, { useState } from "react";
-import { collection, doc, getDocs, setDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "../firebaseConfig";
+import React, { useEffect, useState } from "react";
+import { collection, doc, getDocs, setDoc } from "firebase/firestore";
+import { db, serverTimestamp } from "../firebaseConfig";
+import SearchableSelect from "./Universal/SearchableSelect";
+import { fetchCollectionDocs } from "../helpers/firestoreFetch";
+
+const normalizeKPI = (input) => {
+  const raw = String(input || "")
+    .toUpperCase()
+    .replace(/[^0-9]/g, "");
+  if (!raw) return "";
+  return `KPI-${raw.padStart(3, "0")}`;
+};
 
 const AddLead = () => {
   const [lead, setLead] = useState({
+    autoId: "",
     name: "",
     phone: "",
     email: "",
     location: "",
     source: "",
+    projectType: "Residential",
     teleSale: "",
     assignedConsultant: "",
     locationLink: "",
@@ -16,6 +28,40 @@ const AddLead = () => {
   });
 
   const [loading, setLoading] = useState(false);
+  const [teleUsers, setTeleUsers] = useState([]);
+  const [consultants, setConsultants] = useState([]);
+
+  const normalizeRole = (v) =>
+    String(v || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        const rows = await fetchCollectionDocs("Users");
+        const list = (rows || []).map((data) => ({
+          id: data.id,
+          name: data.Name || data.name || "",
+          email: data.email || "",
+          role: normalizeRole(data.role || data.designation || ""),
+        }));
+
+        const teleList = list.filter((u) => ["tele_caller", "telesales", "team_lead"].includes(u.role));
+        const consultantList = list.filter((u) => ["consultant", "area_sales_manager", "zonal_manager"].includes(u.role));
+
+        setTeleUsers(teleList);
+        setConsultants(consultantList);
+      } catch (err) {
+        console.error("Tele users load error:", err);
+        setTeleUsers([]);
+        setConsultants([]);
+      }
+    };
+
+    loadUsers();
+  }, []);
 
   const handleChange = (e) => {
     setLead({
@@ -30,23 +76,57 @@ const AddLead = () => {
 
     try {
       const leadsRef = collection(db, "leads");
-      const snapshot = await getDocs(leadsRef);
-      const leadCount = snapshot.size + 1;
-      const leadId = `KPI-${String(leadCount).padStart(3, "0")}`;
+      const dealsRef = collection(db, "deals");
+      const leadsSnap = await getDocs(leadsRef);
+      const dealsSnap = await getDocs(dealsRef);
+
+      const manualKpi = normalizeKPI(lead.autoId);
+
+      let leadId = manualKpi;
+      if (!leadId) {
+        let max = 0;
+        [...leadsSnap.docs, ...dealsSnap.docs].forEach((d) => {
+          const data = d.data() || {};
+          const kpi = data.autoId || data.kpiId || d.id;
+          if (String(kpi).startsWith("KPI-")) {
+            const n = parseInt(String(kpi).split("-")[1], 10);
+            if (!Number.isNaN(n) && n > max) max = n;
+          }
+        });
+        leadId = `KPI-${String(max + 1).padStart(3, "0")}`;
+      }
+
+      const duplicateInLeads = leadsSnap.docs.some((d) => {
+        const data = d.data() || {};
+        return d.id === leadId || data.autoId === leadId;
+      });
+      const duplicateInDeals = dealsSnap.docs.some((d) => {
+        const data = d.data() || {};
+        return data.autoId === leadId || data.kpiId === leadId;
+      });
+
+      if (duplicateInLeads || duplicateInDeals) {
+        alert(`❌ KPI ID ${leadId} already exists.`);
+        setLoading(false);
+        return;
+      }
 
       await setDoc(doc(db, "leads", leadId), {
         ...lead,
+        autoId: leadId,
         createdAt: serverTimestamp(),
       });
 
       alert(`✅ Lead added successfully with ID: ${leadId}`);
 
       setLead({
+        autoId: "",
         name: "",
         phone: "",
         email: "",
         location: "",
         source: "",
+        projectType: "Residential",
         teleSale: "",
         assignedConsultant: "",
         locationLink: "",
@@ -65,6 +145,14 @@ const AddLead = () => {
       <div style={styles.container}>
         <h2 style={styles.title}>Add New Lead</h2>
         <form onSubmit={handleAddLead} style={styles.form}>
+          <input
+            type="text"
+            name="autoId"
+            placeholder="KPI ID (optional) e.g. KPI-001"
+            value={lead.autoId}
+            onChange={handleChange}
+            style={styles.input}
+          />
           <input
             type="text"
             name="name"
@@ -116,22 +204,41 @@ const AddLead = () => {
             onChange={handleChange}
             style={styles.input}
           />
-          <input
-            type="text"
-            name="teleSale"
-            placeholder="Tele-Sales Executive"
-            value={lead.teleSale}
+          <select
+            name="projectType"
+            value={lead.projectType}
             onChange={handleChange}
-            style={styles.input}
-          />
-          <input
-            type="text"
-            name="assignedConsultant"
-            placeholder="Assigned Consultant"
-            value={lead.assignedConsultant}
-            onChange={handleChange}
-            style={styles.input}
-          />
+            required
+            style={styles.select}
+          >
+            <option value="Residential">Residential</option>
+            <option value="Commercial">Commercial</option>
+          </select>
+          <div style={styles.inputGroup}>
+            <SearchableSelect
+              options={teleUsers}
+              value={lead.teleSale}
+              onChange={(val) => setLead((prev) => ({ ...prev, teleSale: val || "" }))}
+              placeholder="Search Tele-Caller / Team Lead by name or email"
+              getOptionValue={(u) => u.name || u.email || u.id}
+              getOptionLabel={(u) => `${u.name || u.email}${u.email && u.name ? ` (${u.email})` : ""}`}
+              getOptionSearchText={(u) => `${u.name || ""} ${u.email || ""}`}
+              allowClear
+            />
+          </div>
+
+          <div style={styles.inputGroup}>
+            <SearchableSelect
+              options={consultants}
+              value={lead.assignedConsultant}
+              onChange={(val) => setLead((prev) => ({ ...prev, assignedConsultant: val || "" }))}
+              placeholder="Search Assigned Consultant by name or email"
+              getOptionValue={(u) => u.email || u.name || u.id}
+              getOptionLabel={(u) => `${u.name || u.email}${u.email && u.name ? ` (${u.email})` : ""}`}
+              getOptionSearchText={(u) => `${u.name || ""} ${u.email || ""}`}
+              allowClear
+            />
+          </div>
 
           <select
             name="status"
@@ -196,6 +303,11 @@ const styles = {
     border: "1px solid #ccc",
     backgroundColor: "#fff",
     color: "#333",
+  },
+  inputGroup: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
   },
   button: {
     padding: "12px",

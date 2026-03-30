@@ -1,7 +1,16 @@
 import React, { useEffect, useState, useRef } from "react";
 import { db, serverTimestamp } from "../firebaseConfig";
-import { doc, getDoc, setDoc, collection, getDocs, addDoc } from "firebase/firestore";
-import { getAuth } from "firebase/auth";
+import { auth, db, serverTimestamp } from "../firebaseConfig";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  collection,
+  getDocs,
+  addDoc,
+} from "firebase/firestore";
+import { fetchCollectionREST } from "../helpers/firestoreRest";
+import { useAuth } from "../context/AuthContext";
 
 /*
   LeadsLayoutPage.jsx
@@ -238,30 +247,44 @@ export function LeadsLayoutEditor({ onSaved }) {
 
 // ----------------------- Lead Drawer Dynamic (reads layout + fields) -----------------------
 export function LeadDrawerDynamicIntegrated({ onClose, onLeadAdded, existingLead }) {
-  const auth = getAuth();
-  const [currentUser, setCurrentUser] = useState(null);
+  const { user: currentUser } = useAuth();
   const [fieldsDef, setFieldsDef] = useState([]); // array of objects {name,label,type,required,options}
   const [layout, setLayout] = useState([]); // array of sections
   const [form, setForm] = useState({});
   const [loading, setLoading] = useState(true);
   const [consultants, setConsultants] = useState([]);
 
-  useEffect(() => {
-    const unsub = auth.onAuthStateChanged((u) => setCurrentUser(u || null));
-    return () => unsub && unsub();
-  }, [auth]);
-
   // load consultants for assignedConsultant
-  useEffect(() => {
-    const fetchConsultants = async () => {
-      try {
-        const snap = await getDocs(collection(db, 'Users'));
-        const users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        setConsultants(users.filter(u => (u.designation || u.role || '').toString().toLowerCase().includes('consultant')));
-      } catch (e) { console.warn('fetch consultants', e); }
-    };
-    fetchConsultants();
-  }, []);
+ useEffect(() => {
+  const fetchConsultants = async () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+      const token = stored.idToken;
+
+      if (!token) {
+        console.warn("No idToken found, cannot load consultants");
+        setConsultants([]);
+        return;
+      }
+
+      const users = await fetchCollectionREST("Users", token);
+
+      const consultants = (users || []).filter((u) =>
+        (u.designation || u.role || "")
+          .toString()
+          .toLowerCase()
+          .includes("consultant")
+      );
+
+      setConsultants(consultants);
+    } catch (e) {
+      console.warn("fetch consultants (REST)", e);
+      setConsultants([]);
+    }
+  };
+
+  fetchConsultants();
+}, []);
 
   // load crm_fields/leads (fields + layout)
   useEffect(() => {

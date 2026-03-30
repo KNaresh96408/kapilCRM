@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { db } from "../../firebaseConfig";
-import { collection, addDoc, setDoc, doc, serverTimestamp } from "firebase/firestore";
+import { db, serverTimestamp} from "../../firebaseConfig";
+import { collection, addDoc, setDoc, doc } from "firebase/firestore";
 
 // CreateModule.jsx
 // Modal component to create a new module and initialize its fields layout in Firestore.

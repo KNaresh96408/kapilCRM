@@ -1,12 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../firebaseConfig";
-import {
-  collection,
-  getDocs,
-  deleteDoc,
-  doc,
-  updateDoc,
-} from "firebase/firestore";
+import { deleteDoc, doc, updateDoc } from "firebase/firestore";
+import { fetchCollectionREST } from "../helpers/firestoreRest";
 import QuotationPreview from "./QuotationPreview";
 
 const QuotationsDashboard = () => {
@@ -23,10 +18,26 @@ const QuotationsDashboard = () => {
   useEffect(() => {
     const fetchQuotations = async () => {
       try {
-        const snapshot = await getDocs(collection(db, "quotations"));
-        const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setQuotations(data);
-        setFiltered(data);
+       
+const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+const token = stored.idToken;
+
+if (!token) {
+  console.warn("No idToken found for quotations");
+  setQuotations([]);
+  setFiltered([]);
+  return;
+}
+
+const data = await fetchCollectionREST("quotations", token);
+
+const normalized = (data || []).map((q) => ({
+  id: q.id,
+  ...q,
+}));
+
+setQuotations(normalized);
+setFiltered(normalized);
       } catch (err) {
         console.error("Error loading quotations:", err);
       } finally {
@@ -208,7 +219,10 @@ maxWidth: "160px",
       </div>
 
       {selectedQuotation && (
-        <QuotationPreview data={selectedQuotation} />
+        <QuotationPreview
+          data={{ ...selectedQuotation, isSaved: true }}
+          onClose={() => setSelectedQuotation(null)}
+        />
       )}
     </div>
   );

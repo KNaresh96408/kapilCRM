@@ -12,8 +12,8 @@ import {
   query,
   where,
 } from "firebase/firestore";
-import { db, serverTimestamp } from "../firebaseConfig";
-import { getAuth } from "firebase/auth";
+import { auth, db, serverTimestamp } from "../firebaseConfig";
+import { fetchCollectionREST } from "../helpers/firestoreRest";
 
 /**
  * DynamicCreateDrawer
@@ -43,7 +43,6 @@ export default function DynamicCreateDrawer({
   existingId = null,
   onSaved = () => {},
 }) {
-  const auth = getAuth();
   const [loading, setLoading] = useState(true);
   const [fieldsDef, setFieldsDef] = useState([]); // array of field defs
   const [layout, setLayout] = useState([{ section: "main", fields: [] }]);
@@ -107,24 +106,37 @@ export default function DynamicCreateDrawer({
 
   // load consultants (used by Assigned Consultant field)
   useEffect(() => {
-    const fetchConsultants = async () => {
-      try {
-        const snap = await getDocs(collection(db, "Users"));
-        const users = snap.docs
-          .map((d) => ({
-            id: d.id,
-            name: d.data().Name || d.data().name,
-            email: d.data().email,
-            role: d.data().designation || d.data().role,
-          }))
-          .filter((u) => u.role?.toLowerCase()?.includes("consultant"));
-        setConsultants(users);
-      } catch (e) {
-        console.error("fetch consultants failed", e);
+  const fetchConsultants = async () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+      const token = stored.idToken;
+
+      if (!token) {
+        console.warn("No idToken found for consultants");
+        setConsultants([]);
+        return;
       }
-    };
-    fetchConsultants();
-  }, []);
+
+      const users = await fetchCollectionREST("Users", token);
+
+      const consultants = (users || [])
+        .map((u) => ({
+          id: u.id,
+          name: u.Name || u.name || "",
+          email: u.email || "",
+          role: (u.designation || u.role || "").toLowerCase(),
+        }))
+        .filter((u) => u.role.includes("consultant"));
+
+      setConsultants(consultants);
+    } catch (e) {
+      console.error("fetch consultants failed (REST)", e);
+      setConsultants([]);
+    }
+  };
+
+  fetchConsultants();
+}, []);
 
   // load existing doc if editing
   useEffect(() => {
@@ -251,25 +263,32 @@ export default function DynamicCreateDrawer({
 
   // generateNextKPI (copied from your LeadDrawer)
   const generateNextKPI = async () => {
-    const cols = ["leads", "deals", "salesOrders"];
-    let max = 0;
-    for (const c of cols) {
-      try {
-        const snap = await getDocs(collection(db, c));
-        snap.forEach((d) => {
-          const x = d.data().autoId || d.data().kpiId;
-          if (x?.startsWith("KPI-")) {
-            const n = parseInt(x.split("-")[1], 10);
-            if (!isNaN(n) && n > max) max = n;
-          }
-        });
-      } catch (e) {
-        // ignore per-collection errors
-        console.warn("generateNextKPI: error reading", c, e);
-      }
+  const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+  const token = stored.idToken;
+
+  if (!token) throw new Error("No idToken for KPI generation");
+
+  const cols = ["leads", "deals", "salesOrders"];
+  let max = 0;
+
+  for (const c of cols) {
+    try {
+      const docs = await fetchCollectionREST(c, token);
+
+      (docs || []).forEach((d) => {
+        const x = d.autoId || d.kpiId;
+        if (x?.startsWith("KPI-")) {
+          const n = parseInt(x.split("-")[1], 10);
+          if (!isNaN(n) && n > max) max = n;
+        }
+      });
+    } catch (e) {
+      console.warn("generateNextKPI: REST error reading", c, e);
     }
-    return `KPI-${String(max + 1).padStart(3, "0")}`;
-  };
+  }
+
+  return `KPI-${String(max + 1).padStart(3, "0")}`;
+};
 
   // moveLeadToDeals (copied and adapted)
   const moveLeadToDeals = async (leadData) => {

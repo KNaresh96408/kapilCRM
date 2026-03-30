@@ -6,30 +6,29 @@ import { fetchUserMonthAttendance, fetchAttendanceRange, getHolidays } from "../
 export default function ExportAttendanceModal({ userId, onClose }) {
   const [mode, setMode] = useState("month"); // "month" or "all"
   const [loading, setLoading] = useState(false);
-  const [records, setRecords] = useState([]);
   const [holidays, setHolidays] = useState([]);
+  const [userMap, setUserMap] = useState({});
 
   useEffect(() => {
     (async () => {
-      setLoading(true);
       try {
-        if (mode === "month") {
-          const rec = await fetchUserMonthAttendance(userId);
-          setRecords(rec || []);
-        } else {
-          // entire history
-          const rows = await fetchAttendanceRange("1900-01-01", "9999-12-31");
-          // filter to userId if provided
-          setRecords(userId ? rows.filter(r => r.userId === userId) : rows);
-        }
         setHolidays(await getHolidays());
+
+        // load Users (resilient helper that falls back to REST)
+        try {
+          const rows = await import('../helpers/firestoreFetch').then((m) => m.fetchCollectionDocs('Users'));
+          const map = {};
+          rows.forEach((r) => { map[r.id] = r.Name || r.name || r.displayName || r.email || r.id; });
+          setUserMap(map);
+        } catch (uErr) {
+          console.warn('ExportAttendance: failed to load users', uErr && (uErr.message || uErr));
+          setUserMap({});
+        }
       } catch (e) {
         console.error("Export load err", e);
-      } finally {
-        setLoading(false);
       }
     })();
-  }, [mode, userId]);
+  }, [userId]);
 
   const minutesToHrsStr = (mins) => {
     if (mins === undefined || mins === null) return "-";
@@ -38,21 +37,31 @@ export default function ExportAttendanceModal({ userId, onClose }) {
     return `${h}:${String(m).padStart(2, "0")}`;
   };
 
-  const exportExcel = () => {
-    if (!records || !records.length) {
-      alert("No records to export");
-      return;
-    }
+  const exportExcel = async () => {
+    setLoading(true);
+    try {
+      let records = [];
+      if (mode === "month") {
+        records = await fetchUserMonthAttendance(userId);
+      } else {
+        const rows = await fetchAttendanceRange("1900-01-01", "9999-12-31");
+        records = userId ? rows.filter((r) => r.userId === userId) : rows;
+      }
+
+      if (!records || !records.length) {
+        alert("No records to export");
+        return;
+      }
 
     // Build worksheet rows (human readable)
-    const rows = records.map(r => {
+const rows = records.map((r) => {
       const date = r.date;
       const totalMinutes = Number(r.totalMinutes || 0);
       // half-day rule: below 7 hours => half-day
       const status = totalMinutes > 0 && totalMinutes < (7 * 60) ? "half-day" : (r.status || "absent");
       return {
         Date: date,
-        User: r.userName || r.userId || "",
+        User: r.userName || userMap[r.userId] || r.userId || "",
         Status: status,
         Minutes: totalMinutes,
         Hours: minutesToHrsStr(totalMinutes),
@@ -129,6 +138,9 @@ export default function ExportAttendanceModal({ userId, onClose }) {
     }
 
     onClose && onClose();
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -142,8 +154,14 @@ export default function ExportAttendanceModal({ userId, onClose }) {
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={exportExcel} style={{ flex: 1, background: "#800000", color:"#fff", padding: 10, borderRadius: 6 }}>Export</button>
-          <button onClick={onClose} style={{ padding: 10 }}>Cancel</button>
+          <button
+            onClick={exportExcel}
+            disabled={loading}
+            style={{ flex: 1, background: "#800000", color:"#fff", padding: 10, borderRadius: 6, opacity: loading ? 0.7 : 1 }}
+          >
+            {loading ? "Exporting..." : "Export"}
+          </button>
+          <button onClick={onClose} disabled={loading} style={{ padding: 10, opacity: loading ? 0.7 : 1 }}>Cancel</button>
         </div>
 
         <div style={{ marginTop: 10, color: "#666", fontSize: 13 }}>

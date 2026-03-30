@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../../firebase/firebaseConfig";
+import { getDocsWithFallback } from "../../../helpers/firestoreFetch";
 import { useDashboardFilters } from "../../../context/DashboardFilterContext";
 import { isDateInFilter } from "../../utils/isDateInFilter";
 import { getScopedQuery } from "../../../helpers/getScopedQuery";
@@ -36,9 +35,8 @@ export default function ZoneWiseChart() {
 
   const loadZoneData = async () => {
     const q = await getScopedQuery("salesOrders");
-    const snap = await getDocs(q);
-    let arr = [];
-    snap.forEach(doc => arr.push(doc.data()));
+    const rows = await getDocsWithFallback(q, "salesOrders", null);
+    const arr = rows.map((row) => row.data || row);
     setRawOrders(arr);
   };
 
@@ -47,7 +45,7 @@ export default function ZoneWiseChart() {
 
     rawOrders.forEach(d => {
       const zone = (d.sales_zone || d.zone || "Unknown").trim();
-      const created = d.createdAt ? new Date(d.createdAt.toDate()) : null;
+      // created date handled via isDateInFilter (supports REST timestamps)
 
       if (filters.zone !== "All" && zone !== filters.zone) return;
 

@@ -1,4 +1,4 @@
-import { db } from "../firebaseConfig";
+import { db, serverTimestamp } from "../firebaseConfig";
 import {
   collection,
   addDoc,
@@ -6,7 +6,6 @@ import {
   query,
   orderBy,
   limit,
-  serverTimestamp,
 } from "firebase/firestore";
 
 /**

@@ -1,7 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc } from "firebase/firestore";
-import { db } from "../../firebase/firebaseConfig";
 
 export default function SurveyStart() {
   const { dealId, token } = useParams();
@@ -12,37 +10,26 @@ export default function SurveyStart() {
   useEffect(() => {
     const validate = async () => {
       try {
-        const ref = doc(db, "deals", dealId);
-        const snap = await getDoc(ref);
+        const api = "https://us-central1-kapil-power-crm.cloudfunctions.net/getDealForSurvey";
+        const url = `${api}?dealId=${encodeURIComponent(dealId)}&token=${encodeURIComponent(token)}`;
+        const res = await fetch(url);
+        const data = await res.json().catch(() => ({}));
 
-        if (!snap.exists()) {
-          setStatus("❌ Invalid Deal — Link Not Valid");
-          return;
-        }
-
-        const data = snap.data();
-
-        // Check token exists
-        if (!data.siteSurveyToken) {
-          setStatus("❌ No Survey Token Found for this Deal");
-          return;
-        }
-
-        // Token mismatch
-        if (data.siteSurveyToken !== token) {
-          setStatus("❌ Invalid or Tampered Link");
-          return;
-        }
-
-        // Expiry Check
-        if (data.siteSurveyExpiry && data.siteSurveyExpiry < Date.now()) {
-          setStatus("❌ Survey Link Expired");
-          return;
-        }
-
-        // Already Submitted?
-        if (data.siteSurveyStatus === "completed") {
-          setStatus("✔ Survey Already Submitted");
+        if (!res.ok) {
+          const msg = String(data?.error || "").toLowerCase();
+          if (msg.includes("expired")) {
+            setStatus("❌ Survey Link Expired");
+            return;
+          }
+          if (msg.includes("invalid")) {
+            setStatus("❌ Invalid or Tampered Link");
+            return;
+          }
+          if (msg.includes("not found")) {
+            setStatus("❌ Invalid Deal — Link Not Valid");
+            return;
+          }
+          setStatus("❌ Link Validation Failed");
           return;
         }
 

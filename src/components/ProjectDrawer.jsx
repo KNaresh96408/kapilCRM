@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from "react";
-import { db } from "../firebaseConfig";
+import { db, serverTimestamp } from "../firebaseConfig";
 import {
   doc,
   updateDoc,
   getDoc,
   setDoc,
-  serverTimestamp,
   getDocs,
   collection,
   deleteDoc,
 } from "firebase/firestore";
 import { usePermission } from "../hooks/usePermission";
+import { getAreaOptions, getStateOptions, getZoneOptions, isAreaInZone, isZoneInState } from "../helpers/salesRegions";
+import { isZonalManagerField, ZONAL_MANAGER_NAMES } from "../helpers/zonalManagers";
 
 
 /**
@@ -28,6 +29,21 @@ function prettyLabel(name) {
   if (!name) return "";
   return name.toString().replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 }
+// 🔐 NORMALIZER — SAME AS SALES ORDER
+const normalizeScope = (v) =>
+  String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9]/g, "");
+
+const pickScopedDisplay = (rawValue, labelValue) => {
+  const raw = String(rawValue || "").trim();
+  const label = String(labelValue || "").trim();
+  if (!label) return raw;
+  if (!raw) return label;
+  return normalizeScope(raw) === normalizeScope(label) ? label : raw;
+};
 
 export default function ProjectDrawer(props) {
   const perm = usePermission("projects");
@@ -68,6 +84,8 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
   // -------------------------
   const [fieldsDef, setFieldsDef] = useState([]);
   const [layoutDef, setLayoutDef] = useState([]);
+  const isMobileView = typeof window !== "undefined" && window.innerWidth <= 768;
+  const activeKpiId = form?.kpiId || project?.kpiId || "-";
 
 
   useEffect(() => {
@@ -117,7 +135,15 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
   // Reload drawer data if project changes
   useEffect(() => {
     setForm((prev) => {
-      const merged = { ...(prev || {}), ...(project || {}) };
+      const merged = {
+        ...(prev || {}),
+        ...(project || {}),
+        state: project?.state_label || project?.state || prev?.state || "",
+        sales_zone:
+          project?.sales_zone_label || project?.sales_zone || prev?.sales_zone || "",
+        sales_area:
+          project?.sales_area_label || project?.sales_area || prev?.sales_area || "",
+      };
       fieldsDef.forEach((fd) => {
         if (merged[fd.name] === undefined) {
           if (fd.type === "checkbox") merged[fd.name] = !!fd.default;
@@ -129,6 +155,20 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
     });
   }, [project, fieldsDef.length]);
 
+  useEffect(() => {
+    if (!form?.state) return;
+    if (form.sales_zone && !isZoneInState(form.state, form.sales_zone)) {
+      setForm((prev) => ({ ...prev, sales_zone: "", sales_area: "" }));
+    }
+  }, [form?.state, form?.sales_zone]);
+
+  useEffect(() => {
+    if (!form?.state || !form?.sales_zone) return;
+    if (form.sales_area && !isAreaInZone(form.state, form.sales_zone, form.sales_area)) {
+      setForm((prev) => ({ ...prev, sales_area: "" }));
+    }
+  }, [form?.state, form?.sales_zone, form?.sales_area]);
+
   const currentUser =
   typeof window !== "undefined"
     ? JSON.parse(localStorage.getItem("kp-user") || "{}")
@@ -139,10 +179,40 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
   // -------------------------
   const handleChange = (field, value) => {
     if (!canEdit) return;// block edits
-    setForm((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
+    setForm((prev) => {
+      const next = {
+        ...prev,
+        [field]: value,
+      };
+
+      const scopeKey = String(field || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, "");
+
+      if (scopeKey === "state") {
+        next.state = value;
+        next.state_label = value;
+        next.sales_zone = "";
+        next.sales_zone_label = "";
+        next.sales_area = "";
+        next.sales_area_label = "";
+      }
+
+      if (scopeKey === "saleszone" || scopeKey === "zone") {
+        next.sales_zone = value;
+        next.sales_zone_label = value;
+        next.sales_area = "";
+        next.sales_area_label = "";
+      }
+
+      if (scopeKey === "salesarea") {
+        next.sales_area = value;
+        next.sales_area_label = value;
+      }
+
+      return next;
+    });
   };
 
   // -------------------------
@@ -156,22 +226,6 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
   };
 
   const dateOrNull = (d) => (d ? new Date(d) : null);
-
-  const sixtyDate = dateOrNull(project?.sixtyPercentDate);
-  const dispatchDate = dateOrNull(form.dispatchDate);
-  const installationDate = dateOrNull(form.installationDate);
-  const netMeterDate = dateOrNull(form.netMeterDate);
-  const today = new Date();
-
-  const computeDelay = (d1, d2) => {
-    if (!d1 || !d2) return "";
-    const diff = Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
-    return diff + " days";
-  };
-
-  const dispatchDelay = computeDelay(dispatchDate, sixtyDate);
-  const installationDelay = computeDelay(installationDate, dispatchDate);
-  const netMeterDelay = computeDelay(netMeterDate, today);
 
   const handleDeleteProject = async () => {
   if (!isAdmin) return alert("Only admin can delete projects.");
@@ -207,24 +261,27 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
         phone: form.phone ?? null,
         address: form.address ?? null,
         capacity: form.capacity !== undefined ? Number(form.capacity || 0) : null,
+        projectType: form.projectType || "Residential",
         status: form.status ?? null,
         startDate: form.startDate ?? null,
         endDate: form.endDate ?? null,
         notes: form.notes ?? null,
+            // 🔐 NORMALIZED SCOPE FIELDS (CRITICAL)
+          state: normalizeScope(pickScopedDisplay(form.state, form.state_label)),
+          sales_zone: normalizeScope(pickScopedDisplay(form.sales_zone, form.sales_zone_label)),
+          sales_area: normalizeScope(pickScopedDisplay(form.sales_area, form.sales_area_label)),
+
+  // 👁 HUMAN READABLE (OPTIONAL BUT IMPORTANT)
+          state_label: pickScopedDisplay(form.state, form.state_label),
+          sales_zone_label: pickScopedDisplay(form.sales_zone, form.sales_zone_label),
+          sales_area_label: pickScopedDisplay(form.sales_area, form.sales_area_label),
+
 
         // NEW FIELDS
         dispatchDate: form.dispatchDate || null,
         installationDate: form.installationDate || null,
         netMeterDate: form.netMeterDate || null,
         nationalPortalStage: form.nationalPortalStage || null,
-
-        dispatchStatus: form.dispatchDate ? "Done" : "Pending",
-        installationStatus: form.installationDate ? "Done" : "Pending",
-        netMeterStatus: form.netMeterDate ? "Done" : "Pending",
-
-        dispatchDelay,
-        installationDelay,
-        netMeterDelay,
 
         updatedAt: serverTimestamp(),
         updatedBy:
@@ -276,8 +333,9 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
     } catch (err) {
       console.error("Error saving project:", err);
       alert("Could not save project: " + (err.message || err));
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   // -------------------------
@@ -287,14 +345,75 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
     const val = form[fd.name] ?? "";
     const commonStyle = {
       width: "100%",
-      padding: 8,
-      borderRadius: 6,
-      border: "1px solid #ccc",
+      padding: "8px 10px",
+      borderRadius: 8,
+      border: "1px solid rgba(128,0,0,0.28)",
       marginBottom: 12,
-      background: isAdmin ? "#fff" : "#f3f3f3",
+      background: isAdmin ? "#fff" : "#f6f6f6",
+      fontSize: 13,
+      color: "#111827",
     };
 
     const type = (fd.type || "text").toLowerCase();
+
+    const fieldKey = String(fd.name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_-]+/g, "");
+    const isStateField = fieldKey === "state";
+    const isZoneField = fieldKey === "saleszone" || fieldKey === "zone";
+    const isAreaField = fieldKey === "salesarea";
+
+    if (isStateField) {
+      const states = getStateOptions();
+      return (
+        <select
+          value={val ?? ""}
+          onChange={(e) => handleChange(fd.name, e.target.value)}
+          style={commonStyle}
+          disabled={!canEdit}
+        >
+          <option value="">Select</option>
+          {states.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+      );
+    }
+
+    if (isZoneField) {
+      const zones = getZoneOptions(form.state);
+      return (
+        <select
+          value={val ?? ""}
+          onChange={(e) => handleChange(fd.name, e.target.value)}
+          style={commonStyle}
+          disabled={!canEdit || !form.state}
+        >
+          <option value="">Select</option>
+          {zones.map((z) => (
+            <option key={z} value={z}>{z}</option>
+          ))}
+        </select>
+      );
+    }
+
+    if (isAreaField) {
+      const areas = getAreaOptions(form.state, form.sales_zone);
+      return (
+        <select
+          value={val ?? ""}
+          onChange={(e) => handleChange(fd.name, e.target.value)}
+          style={commonStyle}
+          disabled={!canEdit || !form.state || !form.sales_zone}
+        >
+          <option value="">Select</option>
+          {areas.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+      );
+    }
 
     switch (type) {
       case "textarea":
@@ -335,6 +454,24 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
 
       case "select":
       case "picklist":
+        if (isZonalManagerField(fd.name)) {
+          return (
+            <select
+              value={val ?? ""}
+              onChange={(e) => handleChange(fd.name, e.target.value)}
+              style={commonStyle}
+              disabled={!canEdit}
+            >
+              <option value="">Select</option>
+              {ZONAL_MANAGER_NAMES.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          );
+        }
+
         return (
           <select
             value={val ?? ""}
@@ -401,17 +538,21 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
   // -------------------------
   const inputStyle = {
     width: "100%",
-    padding: "8px",
-    borderRadius: "6px",
-    border: "1px solid #ccc",
+    padding: "8px 10px",
+    borderRadius: "8px",
+    border: "1px solid rgba(128,0,0,0.28)",
     marginBottom: "12px",
-    background: isAdmin ? "#fff" : "#f3f3f3",
+    background: isAdmin ? "#fff" : "#f6f6f6",
+    fontSize: 13,
+    color: "#111827",
   };
 
   const label = {
     display: "block",
     marginBottom: "6px",
     fontWeight: 600,
+    fontSize: 13,
+    color: "#800000",
   };
 
   // -------------------------
@@ -423,19 +564,20 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
     position: "fixed",
     right: 0,
     top: 0,
-    width: window.innerWidth <= 768 ? "100%" : "460px",
+    width: isMobileView ? "100%" : "min(620px, 100vw)",
     height: "100vh",
     background: "#fff",
     boxShadow: "-4px 0 12px rgba(0,0,0,0.2)",
-      padding: 7,
+    padding: isMobileView ? 12 : 16,
     overflowY: "auto",
     overscrollBehavior: "contain",
-    overflowX: "auto",               // ⭐ ADD THIS
-    WebkitOverflowScrolling: "touch",// ⭐ ADD THIS
+    overflowX: "hidden",
+    WebkitOverflowScrolling: "touch",
     zIndex: 999999,
+    paddingBottom: "calc(96px + env(safe-area-inset-bottom, 0px))",
   }}
 >
-      <h2 style={{ color: "#800000", marginTop: 0 }}>Project Details</h2>
+      <h2 style={{ color: "#800000", marginTop: 0, marginRight: 88 }}>Project Details</h2>
 
       <button
         onClick={onClose}
@@ -454,7 +596,21 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
       </button>
 
       {/* KPI ID */}
-      <p style={{ fontWeight: "bold" }}>KPI ID: {form.kpiId}</p>
+      <div
+        style={{
+          display: "inline-block",
+          marginBottom: 14,
+          background: "#fff7e6",
+          color: "#800000",
+          border: "1px solid #f3d7a8",
+          borderRadius: 999,
+          padding: "4px 10px",
+          fontSize: 12,
+          fontWeight: 700,
+        }}
+      >
+        KPI ID: {activeKpiId}
+      </div>
 
       {/* Project Name */}
       <label style={label}>Project Name</label>
@@ -503,6 +659,17 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
         disabled={!canEdit}
       />
 
+      <label style={label}>Project Type</label>
+      <select
+        style={inputStyle}
+        value={form.projectType || "Residential"}
+        onChange={(e) => handleChange("projectType", e.target.value)}
+        disabled={!canEdit}
+      >
+        <option value="Residential">Residential</option>
+        <option value="Commercial">Commercial</option>
+      </select>
+
       {/* 60% Received Date */}
       <label style={label}>60% Received Date (Auto)</label>
       <input style={inputStyle} value={toISO(project.sixtyPercentDate)} disabled />
@@ -517,12 +684,6 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
         disabled={!canEdit}
       />
 
-      <label style={label}>Dispatch Status</label>
-      <input style={inputStyle} value={form.dispatchDate ? "Done" : "Pending"} disabled />
-
-      <label style={label}>Dispatch Delay</label>
-      <input style={inputStyle} value={dispatchDelay} disabled />
-
       {/* Installation */}
       <label style={label}>Installation Date</label>
       <input
@@ -533,12 +694,6 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
         disabled={!canEdit}
       />
 
-      <label style={label}>Installation Status</label>
-      <input style={inputStyle} value={form.installationDate ? "Done" : "Pending"} disabled />
-
-      <label style={label}>Installation Delay</label>
-      <input style={inputStyle} value={installationDelay} disabled />
-
       {/* Net Meter */}
       <label style={label}>Net Meter Date</label>
       <input
@@ -548,12 +703,6 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
         onChange={(e) => handleChange("netMeterDate", e.target.value)}
         disabled={!canEdit}
       />
-
-      <label style={label}>Net Meter Status</label>
-      <input style={inputStyle} value={form.netMeterDate ? "Done" : "Pending"} disabled />
-
-      <label style={label}>Net Meter Delay</label>
-      <input style={inputStyle} value={netMeterDelay} disabled />
 
       {/* National Portal */}
       <label style={label}>National Portal Stage</label>
@@ -622,12 +771,28 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "1fr 1fr",
+              gridTemplateColumns: isMobileView ? "1fr" : "1fr 1fr",
               gap: 12,
               marginTop: 8,
             }}
           >
-            {fieldsDef.map((fd) => (
+            {[...fieldsDef]
+              .sort((a, b) => {
+                const key = (x) =>
+                  String(x?.name || "")
+                    .trim()
+                    .toLowerCase()
+                    .replace(/[\s_-]+/g, "");
+                const tailOrder = ["salesarea", "saleszone", "state", "zonalmanager"];
+                const ai = tailOrder.indexOf(key(a));
+                const bi = tailOrder.indexOf(key(b));
+                const aTail = ai !== -1;
+                const bTail = bi !== -1;
+                if (aTail !== bTail) return aTail ? 1 : -1;
+                if (!aTail && !bTail) return 0;
+                return ai - bi;
+              })
+              .map((fd) => (
               <div
                 key={fd.name}
                 style={{ display: "flex", flexDirection: "column" }}
@@ -650,11 +815,15 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
 {/* FIXED BOTTOM BUTTON BAR */}
 <div
   style={{
+    position: "sticky",
+    bottom: 0,
     borderTop: "1px solid #eee",
+    background: "#fff",
     padding: 12,
     display: "flex",
     gap: 10,
     marginTop: 20,
+    paddingBottom: "calc(12px + env(safe-area-inset-bottom, 0px))",
   }}
 >
          {canEdit && (
@@ -675,24 +844,15 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
     </button>
   )}
   {isAdmin && (
-  <button
-    onClick={handleDeleteProject}
-    style={{
-      flex: 1,
-      background: "red",
-      color: "white",
-      padding: "12px 0",
-      borderRadius: "8px",
-      border: "none",
-      fontWeight: "bold",
-      marginRight: 10
-    }}
-  >
-    Delete Project
-  </button>
-)}
+    <button
+      onClick={handleDeleteProject}
+      style={styles.deleteBtn}
+    >
+      Delete Project
+    </button>
+  )}
 
-  <button
+    <button
     onClick={onClose}
     style={{
       flex: 1,
@@ -709,4 +869,18 @@ function ProjectDrawerInner({ project, onClose, refresh, perm }) {
 </div>
     </div>
   );
+};
+
+const styles = {
+  deleteBtn: {
+    flex: 1,
+    background: "linear-gradient(135deg, #b91c1c, #dc2626)",
+    color: "white",
+    padding: "12px 0",
+    borderRadius: 8,
+    border: "none",
+    fontWeight: 700,
+    boxShadow: "0 6px 16px rgba(185,28,28,0.25)",
+    cursor: "pointer",
+  },
 };

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Meetings">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8f1123"/>
+      <stop offset="100%" stop-color="#5e167a"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="10" width="56" height="42" rx="8" fill="url(#bg)"/>
+  <rect x="10" y="16" width="34" height="24" rx="4" fill="#fff" opacity="0.95"/>
+  <polygon points="29,24 40,19 40,37 29,32" fill="#fff"/>
+  <circle cx="22" cy="28" r="6" fill="#8f1123" opacity="0.9"/>
+  <rect x="14" y="37" width="16" height="3" rx="1.5" fill="#5e167a" opacity="0.9"/>
+</svg>

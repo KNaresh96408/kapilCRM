@@ -1,0 +1,153 @@
+.stock-wrap {
+  background: #fff;
+  border: 1px solid #e7e7e7;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.stock-title {
+  margin: 0 0 12px;
+  color: #1f2d3d;
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.kpi-card {
+  border: 1px solid #ececec;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fafafa;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.kpi-card:hover {
+  border-color: #d9d9d9;
+}
+
+.kpi-card-active {
+  border-color: #8b0000;
+  box-shadow: 0 0 0 2px rgba(139, 0, 0, 0.08);
+}
+
+.kpi-product {
+  font-size: 18px;
+  font-weight: 700;
+  color: #13273b;
+}
+
+.kpi-stock {
+  margin-top: 6px;
+  margin-bottom: 10px;
+  font-weight: 600;
+  color: #8b0000;
+}
+
+.stock-label {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 13px;
+  color: #555;
+}
+
+.stock-select {
+  width: 100%;
+  height: 34px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #fff;
+}
+
+.table-wrap {
+  margin-top: 16px;
+}
+
+.table-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.table-title {
+  margin: 0 0 8px;
+  color: #1f2d3d;
+}
+
+.stock-clear-btn {
+  height: 32px;
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  background: #fff;
+  padding: 0 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.stock-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.stock-table thead tr {
+  background: #f7f7f7;
+}
+
+.stock-table th,
+.stock-table td {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid #efefef;
+  white-space: nowrap;
+}
+
+.stock-empty {
+  text-align: center !important;
+  color: #666;
+}
+
+.stock-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #eee;
+  border-top: 3px solid #8b0000;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 8px;
+}
+
+.stock-muted {
+  color: #666;
+}
+
+.stock-error {
+  color: #b00020;
+  background: #fdecee;
+  border: 1px solid #f7c9ce;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.stock-warning {
+  color: #7a4d00;
+  background: #fff7e6;
+  border: 1px solid #ffe0a3;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

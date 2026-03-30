@@ -1,99 +1,102 @@
-// src/components/PermissionGate.jsx
-import React, { useEffect, useState } from "react";
-import { auth, db } from "../firebaseConfig";
-import { doc, getDoc } from "firebase/firestore";
+import React from "react";
+import { useAuth } from "../context/AuthContext";
+import { usePermission } from "../hooks/usePermission";
 
-export default function PermissionGate({ moduleName, children }) {
-  const [allowed, setAllowed] = useState(null);
+export default function PermissionGate({ moduleName = "", children }) {
+  const { user } = useAuth();
+  const perm = usePermission(moduleName);
 
-  useEffect(() => {
-    const checkPermission = async () => {
-      try {
-        const user = auth.currentUser;
-        if (!user) return setAllowed(false);
-
-        // 🔥 refresh token (important!)
-        await user.getIdToken(true);
-
-        const uid = user.uid;
-
-        // --------------------------
-        // 1️⃣ CHECK USER ROLE
-        // --------------------------
-        const userRef = doc(db, "Users", uid);
-        const userSnap = await getDoc(userRef);
-
-        if (!userSnap.exists()) {
-          console.warn("User record missing!");
-          return setAllowed(false);
-        }
-
-        const role = userSnap.data().role;
-
-        // 🔥 Admin always allowed
-        if (role === "admin") {
-          return setAllowed(true);
-        }
-
-        // --------------------------
-        // 2️⃣ CHECK MODULE PERMISSION
-        // Firestore path:
-        // modulePermissions / <moduleName> / users / <uid>
-        // --------------------------
-        const permRef = doc(
-          db,
-          "modulePermissions",
-          moduleName,
-          "users",
-          uid
-        );
-
-        const permSnap = await getDoc(permRef);
-
-        if (!permSnap.exists()) {
-          // No permission entry → deny
-          return setAllowed(false);
-        }
-
-        const perm = permSnap.data();
-
-        // Allow only if READ is true
-        setAllowed(perm.read === true);
-      } catch (err) {
-        console.error("PermissionGate error:", err);
-        setAllowed(false);
-      }
+  const normalizeRole = (raw) => {
+    const base = (raw || "").toString().trim().toLowerCase();
+    if (!base) return "";
+    const underscored = base.replace(/[\s-]+/g, "_").replace(/_+/g, "_");
+    const compact = underscored.replace(/_/g, "");
+    const aliasByCompact = {
+      saleshead: "sales_head",
+      hroperationsmanager: "agm",
+      hr_operations_manager: "agm",
+      agm: "agm",
+      financemanager: "dgm",
+      finance_manager: "dgm",
+      dgm: "dgm",
+      salesheadmanager: "sales_head",
     };
+    return aliasByCompact[compact] || underscored;
+  };
 
-    checkPermission();
-  }, [moduleName]);
+  // safety
+  if (!moduleName) return null;
 
-  // --------------------------
-  // UI Conditions
-  // --------------------------
-  if (allowed === null) {
+  const role = normalizeRole(user?.role || user?.Role || user?.designation || "");
+  const isServiceEngineer = role === "service_engineer" || role === "service_enginner";
+  const belongsTo = String(
+    user?.belongsTo || user?.belongs_to || user?.team || user?.profile?.belongsTo || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  const isOperationsTeam =
+    (role === "operations_manager" ||
+      role === "operations_executive" ||
+      belongsTo.includes("operations")) &&
+    !belongsTo.includes("rooftop");
+
+  // 🚫 Attachments should be available to everyone EXCEPT operations team
+  if (moduleName === "attachments" && isOperationsTeam) {
     return (
-      <div style={{ padding: 40, textAlign: "center" }}>
-        Checking permissions…
+      <div style={{ padding: 40, textAlign: "center", color: "#800000" }}>
+        ❌ Attachments module is not available for Operations team.
       </div>
     );
   }
 
-  if (!allowed) {
+  // ✅ Attachments should open for all non-operations users
+  // even when modulePermissions entry is missing.
+  if (moduleName === "attachments") {
+    if (isServiceEngineer) {
+      return (
+        <div style={{ padding: 40, textAlign: "center", color: "#800000" }}>
+          ❌ This module is not available for Service Engineer role.
+        </div>
+      );
+    }
+    return <>{children}</>;
+  }
+
+  if (isServiceEngineer) {
     return (
-      <div
-        style={{
-          padding: 40,
-          color: "#800000",
-          fontWeight: "bold",
-          textAlign: "center",
-        }}
-      >
-        ❌ You don’t have permission to view this module.
+      <div style={{ padding: 40, textAlign: "center", color: "#800000" }}>
+        ❌ This module is not available for Service Engineer role.
       </div>
     );
   }
 
-  // Allowed → Render children
-  return children;
+  // 🔥 SUPER ROLES = ALWAYS ALLOWED (NO ASYNC, NO STATE)
+  const SUPER_ROLES = [
+    "admin",
+    "sales_head",
+    "director",
+    "dgm",
+    "agm",
+  ];
+
+  if (SUPER_ROLES.includes(role)) {
+    return <>{children}</>;
+  }
+
+  // ⏳ wait while module permission is loading
+  if (perm.loading) {
+    return null;
+  }
+
+  if (perm.read) {
+    return <>{children}</>;
+  }
+
+  // ❌ denied
+  return (
+    <div style={{ padding: 40, textAlign: "center", color: "#800000" }}>
+      ❌ You don’t have permission to view this module.
+    </div>
+  );
 }

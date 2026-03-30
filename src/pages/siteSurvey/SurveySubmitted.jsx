@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { doc, collection, setDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "../../firebaseConfig";
+import { doc, collection, setDoc, updateDoc } from "firebase/firestore";
+import { db, serverTimestamp } from "../../firebaseConfig";
 
 export default function SurveySubmitted() {
   const [done, setDone] = useState(false);
@@ -18,12 +18,21 @@ export default function SurveySubmitted() {
         return;
       }
 
+      const surveyReportUrl = `https://crm.kapilpower.com/#/survey-report/${dealId}`;
+
+      await updateDoc(doc(db, "deals", dealId), {
+        siteSurveyLink: surveyReportUrl,
+      }).catch(() => {});
+
       await setDoc(
         doc(collection(db, "deals", dealId, "attachments"), "siteSurveyReport"),
         {
           type: "siteSurvey",
           title: "Site Survey Report",
-          url: `https://crm.kapilpower.com/survey-report/${dealId}`,
+          category: "Site Survey Documents",
+          folderName: "Site Survey Documents",
+          url: surveyReportUrl,
+          source: "siteSurvey",
           createdAt: serverTimestamp()
         }
       );

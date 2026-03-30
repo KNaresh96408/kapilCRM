@@ -1,5 +1,28 @@
 {
   "appId": "com.kapilpower.crm",
   "appName": "Kapil Power CRM",
-  "webDir": "dist"
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "iosScheme": "https",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "plugins": {
+    "Keyboard": {
+      "resize": "none",
+      "resizeOnFullScreen": false
+    },
+    "StatusBar": {
+      "overlaysWebView": true,
+      "style": "DARK"
+    },
+    "PushNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
+    }
+  }
 }

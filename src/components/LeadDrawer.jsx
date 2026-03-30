@@ -15,6 +15,12 @@ import {
 } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
 import { usePermission } from "../hooks/usePermission";
+import { useAuth } from "../context/AuthContext";
+import SearchableSelect from "./Universal/SearchableSelect";
+import { getAreaOptions, getStateOptions, getZoneOptions, isAreaInZone, isZoneInState } from "../helpers/salesRegions";
+import { fetchCollectionDocs } from "../helpers/firestoreFetch";
+import { isAdminSessionUser } from "../helpers/bulkImport";
+import { isZonalManagerField, ZONAL_MANAGER_NAMES } from "../helpers/zonalManagers";
 
 
 /* ⭐ ADDED: prettyLabel function */
@@ -25,17 +31,89 @@ function prettyLabel(name) {
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
+// 🔐 NORMALIZER FOR STATE / ZONE / AREA (MANDATORY)
+const normalizeScope = (v) =>
+  String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9]/g, "");
+
+const pickScopedDisplay = (rawValue, labelValue) => {
+  const raw = String(rawValue || "").trim();
+  const label = String(labelValue || "").trim();
+  if (!label) return raw;
+  if (!raw) return label;
+  return normalizeScope(raw) === normalizeScope(label) ? label : raw;
+};
+
+// ⭐ KPI formatter (SAFE, reusable)
+function normalizeKPI(input) {
+  if (!input) return "";
+
+  const raw = input.toString().toUpperCase().replace(/[^0-9]/g, "");
+  if (!raw) return "";
+
+  return `KPI-${raw.padStart(3, "0")}`;
+}
 
 const LeadDrawer = ({ onClose, onLeadAdded, existingLead, refreshLeads }) => {
   const auth = getAuth();
   const [currentUser, setCurrentUser] = useState(null);
   const [consultants, setConsultants] = useState([]);
+  const [teleUsers, setTeleUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const moveInProgress = useRef(false);
   const isEdit = !!existingLead;
   const perm = usePermission("leads");
-  const adminEmails = ["loan@kapilpower.com"];
-const isAdmin = currentUser?.email && adminEmails.includes(currentUser.email);
+  const { user: ctxUser } = useAuth();
+  const isAdmin = isAdminSessionUser() || !!perm?.delete;
+
+const userLS = JSON.parse(localStorage.getItem("kp-user") || "{}");
+
+const normalizeUserRole = (role) =>
+  String(role || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/_+/g, "_");
+
+const normalizedUserRole = normalizeUserRole(
+  ctxUser?.role ||
+    ctxUser?.Role ||
+    userLS?.role ||
+    userLS?.Role ||
+    userLS?.designation ||
+    userLS?.Designation ||
+    userLS?.profile?.role ||
+    userLS?.profile?.Role
+);
+
+const canonicalUserRole = (() => {
+  const compact = normalizedUserRole.replace(/_/g, "");
+  if (compact === "financemanager" || compact === "finance") return "dgm";
+  if (compact === "hroperationsmanager") return "agm";
+  if (compact === "saleshead") return "sales_head";
+  if (compact === "director") return "director";
+  if (compact === "agm") return "agm";
+  if (compact === "dgm") return "dgm";
+  if (compact === "admin") return "admin";
+  return normalizedUserRole;
+})();
+
+const KPI_EDIT_ALLOWED_ROLES = new Set([
+  "admin",
+  "sales_head",
+  "director",
+  "agm",
+  "dgm",
+]);
+
+const canEditKPI =
+  KPI_EDIT_ALLOWED_ROLES.has(canonicalUserRole) ||
+  isAdmin ||
+  String(ctxUser?.email || userLS?.email || "").trim().toLowerCase() === "loan@kapilpower.com" ||
+  String(ctxUser?.uid || userLS?.uid || "").trim() === "26VHcREEDMMg8C24kXYVGzRXHe43";
 
 
   // --- dynamic fields support ---
@@ -48,6 +126,8 @@ const isAdmin = currentUser?.email && adminEmails.includes(currentUser.email);
     "email",
     "location",
     "locationLink",
+    "projectType",
+    "teleSale",
     "assignedConsultant",
     "status",
     "siteVisitArranged",
@@ -60,28 +140,16 @@ const isAdmin = currentUser?.email && adminEmails.includes(currentUser.email);
     email: "",
     location: "",
     locationLink: "",
+    projectType: "Residential",
     teleSale: "",
     assignedConsultant: "",
     status: "new",
     siteVisitArranged: "no",
     siteVisitArrangedDate: "",
   });
-  const TELESALES_USERS = [
-  "Amrutha",
-  "Anjali",
-  "Priyanka",
-  "B Swathi",
-  "Charitha",
-  "E Gopinadh",
-  "Bhargavi",
-  "Jyotsna",
-  "Varshasri",
-  "Pooja",
-  "Sandhya",
-  "Chandra Sai",
-  "Tejo rama",
-  "Thanniru Mery",
-];
+  const activeKpiId =
+    normalizeKPI(lead?.autoId || existingLead?.autoId) ||
+    (isEdit ? "-" : "Will be generated on save");
 
   useEffect(() => {
     const unsub = auth.onAuthStateChanged((user) =>
@@ -147,48 +215,88 @@ const isAdmin = currentUser?.email && adminEmails.includes(currentUser.email);
     if (isEdit && existingLead) {
       setLead((prev) => ({
         ...prev,
+        autoId: normalizeKPI(existingLead.autoId),
         ...existingLead,
+        projectType: existingLead.projectType || prev.projectType || "Residential",
+        state: pickScopedDisplay(existingLead.state, existingLead.state_label) || prev.state || "",
+        sales_zone: pickScopedDisplay(existingLead.sales_zone, existingLead.sales_zone_label) || prev.sales_zone || "",
+        sales_area: pickScopedDisplay(existingLead.sales_area, existingLead.sales_area_label) || prev.sales_area || "",
       }));
     }
   }, [existingLead, isEdit]);
 
-  // load consultants
   useEffect(() => {
-    const fetchConsultants = async () => {
-      try {
-        const snap = await getDocs(collection(db, "Users"));
-        const users = snap.docs
-          .map((d) => ({
-            id: d.id,
-            name: d.data().Name || d.data().name,
-            email: d.data().email,
-            role: d.data().designation || d.data().role,
-          }))
-          .filter((u) => {
-  const role = u.role?.toLowerCase();
-  return (
-    role === "consultant" ||
-    role === "area_sales_manager" ||
-    role === "zonal_manager"
-  );
-});
+    if (!lead.state) return;
+    if (lead.sales_zone && !isZoneInState(lead.state, lead.sales_zone)) {
+      setLead((prev) => ({ ...prev, sales_zone: "", sales_area: "" }));
+    }
+  }, [lead.state, lead.sales_zone]);
 
-        setConsultants(users);
-      } catch (e) {
-        console.error("fetchConsultants error", e);
-      }
-    };
-    fetchConsultants();
-  }, []);
+  useEffect(() => {
+    if (!lead.state || !lead.sales_zone) return;
+    if (lead.sales_area && !isAreaInZone(lead.state, lead.sales_zone, lead.sales_area)) {
+      setLead((prev) => ({ ...prev, sales_area: "" }));
+    }
+  }, [lead.state, lead.sales_zone, lead.sales_area]);
+
+// load consultants
+useEffect(() => {
+  const fetchConsultants = async () => {
+    try {
+      const normalizeRole = (v) =>
+        String(v || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\s-]+/g, "_");
+      const rows = await fetchCollectionDocs("Users");
+      const users = (rows || []).map((d) => ({
+        id: d.id,
+        name: d.Name || d.name,
+        email: d.email,
+        role: normalizeRole(d.role || d.Role || d.designation || d.Designation),
+      }));
+
+      const assignable = users.filter((u) =>
+        u.role?.includes("consultant") ||
+        [
+          "consultant",
+          "area_sales_manager",
+          "zonal_manager",
+          "team_manager",
+          "team_lead",
+          "sales_head",
+        ].includes(u.role)
+      );
+
+      const teleList = users.filter((u) =>
+        [
+          "tele_caller",
+          "telecaller",
+          "telesales",
+          "tele_sales",
+          "team_lead",
+          "team_manager",
+        ].includes(u.role) ||
+        String(u.role || "").includes("tele")
+      );
+
+      setConsultants(assignable);
+      setTeleUsers(teleList);
+    } catch (e) {
+      console.error("fetchConsultants error", e);
+    }
+  };
+  fetchConsultants();
+}, []);
 
   const generateNextKPI = async () => {
     const cols = ["leads", "deals", "salesOrders"];
     let max = 0;
 
     for (const c of cols) {
-      const snap = await getDocs(collection(db, c));
-      snap.forEach((d) => {
-        const x = d.data().autoId || d.data().kpiId;
+      const rows = await fetchCollectionDocs(c);
+      (rows || []).forEach((d) => {
+        const x = d.autoId || d.kpiId;
         if (x?.startsWith("KPI-")) {
           const n = parseInt(x.split("-")[1]);
           if (!isNaN(n) && n > max) max = n;
@@ -227,31 +335,40 @@ if (!snap.empty) {
     // -------- Get Consultant Name --------
     let consultantName = "";
     if (leadData?.assignedConsultant) {
-      const usersSnap = await getDocs(collection(db, "Users"));
-      usersSnap.forEach((u) => {
-        const d = u.data();
-        if (d?.email === leadData.assignedConsultant) {
+      const users = await fetchCollectionDocs("Users");
+      const assignedEmail = String(leadData.assignedConsultant || "").trim().toLowerCase();
+      (users || []).forEach((d) => {
+        const userEmail = String(d?.email || "").trim().toLowerCase();
+        if (userEmail && userEmail === assignedEmail) {
           consultantName = d?.Name || d?.name || "";
         }
       });
     }
 
-    // 🔥 REMOVE `source`, FORCE `lead_source`
-const {
-  source,        // ❌ remove from deal
-  lead_source,   // ✅ preferred field
-  ...cleanLeadData
-} = leadData;
-
 const payload = {
-  ...cleanLeadData,
+  // ✅ keep full lead data in deal (including custom fields)
+  ...leadData,
 
-  // ✅ always keep ONLY lead_source in deal
-  lead_source: lead_source || source || "",
+    // 🔐 NORMALIZED FIELDS
+  state: normalizeScope(leadData.state),
+  sales_zone: normalizeScope(leadData.sales_zone),
+  sales_area: normalizeScope(leadData.sales_area),
+
+  // 👁 LABEL FIELDS
+  state_label: leadData.state || "",
+  sales_zone_label: leadData.sales_zone || "",
+  sales_area_label: leadData.sales_area || "",
+
+
+  // ✅ preserve both source + lead_source (backward + forward compatibility)
+  source: leadData.source || leadData.lead_source || "",
+  lead_source: leadData.lead_source || leadData.source || "",
 
   consultantName,
   autoId,
   kpiId: autoId,
+  leadRef: leadData.id || "",
+  movedFrom: "leads",
   stage: "Qualification",
   siteVisitArrangedDate: leadData.siteVisitArrangedDate || null,
   createdAt: serverTimestamp(),
@@ -318,11 +435,11 @@ if (!isEdit && !perm.create) {
     }
     // 🔒 Mandatory business fields
 const REQUIRED_DYNAMIC_FIELDS = [
-  "source", 
+  "source",
   "sales_zone",
   "sales_area",
   "state",
-  "zonal_manager",
+  "projectType",
 ];
 
 for (const field of REQUIRED_DYNAMIC_FIELDS) {
@@ -338,6 +455,38 @@ for (const field of REQUIRED_DYNAMIC_FIELDS) {
     }
 
     setLoading(true);
+    // 🔒 KPI must be unique across LEADS & DEALS
+if (lead.autoId) {
+  const collectionsToCheck = ["leads", "deals"];
+
+  for (const col of collectionsToCheck) {
+    const q = query(
+      collection(db, col),
+      where("autoId", "==", lead.autoId)
+    );
+
+    const snap = await getDocs(q);
+
+    // ✅ Allow same record while editing
+    if (!snap.empty) {
+      const duplicate = snap.docs.find(
+        (d) => !isEdit || d.id !== existingLead?.id
+      );
+
+      if (duplicate) {
+        alert(`❌ KPI ID ${lead.autoId} already exists in ${col}`);
+        setLoading(false);
+        return;
+      }
+    }
+  }
+}
+    // 🔒 Validate KPI format if manually entered
+if (lead.autoId && !/^KPI-\d+$/.test(lead.autoId)) {
+  alert("Invalid KPI format. Example: KPI-001");
+  setLoading(false);
+  return;
+}
   
 
     try {
@@ -355,6 +504,15 @@ for (const field of REQUIRED_DYNAMIC_FIELDS) {
       const leadData = {
         ...lead,
         ...dynamicFieldData,
+          // 🔐 NORMALIZED FIELDS (FOR SCOPED QUERIES)
+  state: normalizeScope(lead.state),
+  sales_zone: normalizeScope(lead.sales_zone),
+  sales_area: normalizeScope(lead.sales_area),
+
+  // 👁 LABEL FIELDS (FOR UI)
+  state_label: lead.state || "",
+  sales_zone_label: lead.sales_zone || "",
+  sales_area_label: lead.sales_area || "",
         consultantName: selected?.name || "",
         updatedAt: serverTimestamp(),
         updatedBy:
@@ -376,19 +534,21 @@ if (isEdit) {
 
   await updateDoc(doc(db, "leads", existingLead.id), leadData);
 
-if (leadData.siteVisitArranged === "yes") {
-  await moveLeadToDeals({
-    id: existingLead.id,
-    ...existingLead,
-    ...leadData,
-    siteVisitArrangedDate: leadData.siteVisitArrangedDate,
-  });
-  return; // ⛔ STOP here (lead is moved)
-}
+  if (leadData.siteVisitArranged === "yes") {
+    await moveLeadToDeals({
+      id: existingLead.id,
+      ...existingLead,
+      ...leadData,
+      siteVisitArrangedDate: leadData.siteVisitArrangedDate,
+    });
+    return; // ⛔ STOP here (lead is moved)
+  }
 
-alert("Lead updated!");
+  alert("Lead updated!");
       } else {
-        const autoId = await generateNextKPI();
+        const autoId =
+  lead.autoId?.trim() || (await generateNextKPI());
+
 
         const newLead = {
           ...leadData,
@@ -416,7 +576,8 @@ alert("Lead updated!");
       setTimeout(onClose, 200);
     } catch (err) {
       alert("Failed to save lead.");
-    } finally {
+    }
+    finally {
       setLoading(false);
     }
   };
@@ -425,12 +586,99 @@ alert("Lead updated!");
   const renderDynamicInput = (fd) => {
     const val = lead[fd.name] ?? "";
     const commonStyle = {
-      padding: 10,
-      borderRadius: 6,
-      border: "1px solid #800000",
-      color: "#800000",
+      padding: "8px 10px",
+      borderRadius: 8,
+      border: "1px solid rgba(128,0,0,0.35)",
+      color: "#111827",
       width: "100%",
+      fontSize: 13,
+      background: "#fff",
     };
+
+    const fieldKey = String(fd.name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_-]+/g, "");
+    const isStateField = fieldKey === "state";
+    const isZoneField = fieldKey === "saleszone" || fieldKey === "zone";
+    const isAreaField = fieldKey === "salesarea";
+
+    if (isStateField) {
+      const states = getStateOptions();
+      return (
+        <select
+          id={fd.name}
+          value={val ?? ""}
+          onChange={(e) =>
+            setLead({
+              ...lead,
+              state: e.target.value,
+              state_label: e.target.value,
+              sales_zone: "",
+              sales_zone_label: "",
+              sales_area: "",
+              sales_area_label: "",
+            })
+          }
+          style={commonStyle}
+        >
+          <option value="">Select</option>
+          {states.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+      );
+    }
+
+    if (isZoneField) {
+      const zones = getZoneOptions(lead.state);
+      return (
+        <select
+          id={fd.name}
+          value={val ?? ""}
+          onChange={(e) =>
+            setLead({
+              ...lead,
+              sales_zone: e.target.value,
+              sales_zone_label: e.target.value,
+              sales_area: "",
+              sales_area_label: "",
+            })
+          }
+          style={commonStyle}
+          disabled={!lead.state}
+        >
+          <option value="">Select</option>
+          {zones.map((z) => (
+            <option key={z} value={z}>{z}</option>
+          ))}
+        </select>
+      );
+    }
+
+    if (isAreaField) {
+      const areas = getAreaOptions(lead.state, lead.sales_zone);
+      return (
+        <select
+          id={fd.name}
+          value={val ?? ""}
+          onChange={(e) =>
+            setLead({
+              ...lead,
+              sales_area: e.target.value,
+              sales_area_label: e.target.value,
+            })
+          }
+          style={commonStyle}
+          disabled={!lead.state || !lead.sales_zone}
+        >
+          <option value="">Select</option>
+          {areas.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+      );
+    }
 
     const t = (fd.type || "text").toLowerCase();
 
@@ -468,6 +716,39 @@ alert("Lead updated!");
 
       case "select":
       case "picklist":
+        if (isZonalManagerField(fd.name)) {
+          return (
+            <select
+              id={fd.name}
+              value={val ?? ""}
+              onChange={(e) => setLead({ ...lead, [fd.name]: e.target.value })}
+              style={commonStyle}
+            >
+              <option value="">Select</option>
+              {ZONAL_MANAGER_NAMES.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          );
+        }
+
+        if (fd.name === "teleSale") {
+          return (
+            <SearchableSelect
+              options={teleUsers}
+              value={val ?? ""}
+              onChange={(next) => setLead({ ...lead, [fd.name]: next || "" })}
+              placeholder="Search Tele-Caller / Team Lead"
+              getOptionValue={(u) => u.name || u.email || u.id}
+              getOptionLabel={(u) => `${u.name || u.email}${u.email && u.name ? ` (${u.email})` : ""}`}
+              getOptionSearchText={(u) => `${u.name || ""} ${u.email || ""}`}
+              allowClear
+            />
+          );
+        }
+
         return (
           <select
             id={fd.name}
@@ -535,7 +816,10 @@ if (!perm.read) {
     <div style={styles.overlay}>
       <div style={styles.drawer}>
         <div style={styles.header}>
-          <h2 style={styles.title}>{isEdit ? "Edit Lead" : "Add Lead"}</h2>
+          <div>
+            <h2 style={styles.title}>{isEdit ? "Edit Lead" : "Add Lead"}</h2>
+            <div style={styles.kpiBadge}>KPI ID: {activeKpiId}</div>
+          </div>
           <button onClick={onClose} style={styles.closeBtn}>
             ✖
           </button>
@@ -561,8 +845,23 @@ if (!perm.read) {
                     gap: 12,
                   }}
                 >
-                  {fieldsDef
+                  {[...fieldsDef]
                     .filter((fd) => !STATIC_FIELD_NAMES.includes(fd.name))
+                    .sort((a, b) => {
+                      const key = (x) =>
+                        String(x?.name || "")
+                          .trim()
+                          .toLowerCase()
+                          .replace(/[\s_-]+/g, "");
+                      const tailOrder = ["salesarea", "saleszone", "state", "zonalmanager"];
+                      const ai = tailOrder.indexOf(key(a));
+                      const bi = tailOrder.indexOf(key(b));
+                      const aTail = ai !== -1;
+                      const bTail = bi !== -1;
+                      if (aTail !== bTail) return aTail ? 1 : -1;
+                      if (!aTail && !bTail) return 0;
+                      return ai - bi;
+                    })
                     .map((fd) => (
                       <div key={fd.name} style={styles.inputGroup}>
                         <label style={styles.label}>
@@ -575,6 +874,40 @@ if (!perm.read) {
                 </div>
               </div>
             )}
+
+{/* ⭐ KPI ID (Admin / Sales Head only) */}
+{canEditKPI && (
+  <div style={styles.inputGroup}>
+    <label style={styles.label}>KPI ID</label>
+    <input
+  type="text"
+ value={
+  lead.autoId
+    ? lead.autoId.startsWith("KPI-")
+      ? lead.autoId
+      : lead.autoId
+    : ""
+}
+  placeholder="KPI-001"
+ onChange={(e) => {
+  const digits = e.target.value.replace(/\D/g, "");
+  setLead({
+    ...lead,
+    autoId: digits,
+  });
+}}
+onBlur={() => {
+  if (lead.autoId) {
+    setLead((prev) => ({
+      ...prev,
+      autoId: normalizeKPI(prev.autoId),
+    }));
+  }
+}}
+  style={styles.input}
+/>
+  </div>
+)}
 
             {/* STATIC FIELDS (unchanged) */}
             {[
@@ -597,10 +930,10 @@ if (!perm.read) {
         }
         style={styles.select}
       >
-        <option value="">Select Tele-Sales</option>
-        {TELESALES_USERS.map((name) => (
-          <option key={name} value={name}>
-            {name}
+        <option value="">Select Tele-Caller / Team Lead</option>
+        {teleUsers.map((u) => (
+          <option key={u.email || u.name} value={u.name || u.email}>
+            {u.name || u.email}
           </option>
         ))}
       </select>
@@ -616,6 +949,33 @@ if (!perm.read) {
     )}
   </div>
 ))}
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Tele Sale</label>
+              <SearchableSelect
+                options={teleUsers}
+                value={lead.teleSale || ""}
+                onChange={(next) => setLead({ ...lead, teleSale: next || "" })}
+                placeholder="Search Tele-Caller / Team Lead"
+                getOptionValue={(u) => u.name || u.email || u.id}
+                getOptionLabel={(u) => `${u.name || u.email}${u.email && u.name ? ` (${u.email})` : ""}`}
+                getOptionSearchText={(u) => `${u.name || ""} ${u.email || ""}`}
+                allowClear
+              />
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Project Type*</label>
+              <select
+                name="projectType"
+                value={lead.projectType || "Residential"}
+                onChange={(e) => setLead({ ...lead, projectType: e.target.value })}
+                style={styles.select}
+              >
+                <option value="Residential">Residential</option>
+                <option value="Commercial">Commercial</option>
+              </select>
+            </div>
 
             <div style={styles.inputGroup}>
               <label style={styles.label}>Site Visit Arranged</label>
@@ -654,41 +1014,31 @@ if (!perm.read) {
 
             <div style={styles.inputGroup}>
               <label style={styles.label}>Assigned Consultant</label>
-              <select
-                name="assignedConsultant"
+              <SearchableSelect
+                options={consultants}
                 value={lead.assignedConsultant}
-                onChange={(e) =>
-                  setLead({ ...lead, assignedConsultant: e.target.value })
+                onChange={(next) =>
+                  setLead({ ...lead, assignedConsultant: next || "" })
                 }
-                style={styles.select}
-              >
-                <option value="">Select Consultant</option>
-                {consultants.map((c) => (
-                  <option key={c.email} value={c.email}>
-                    {c.name} ({c.email})
-                  </option>
-                ))}
-              </select>
+                placeholder="Search consultant by name or email"
+                getOptionValue={(c) => c.email || c.name || c.id}
+                getOptionLabel={(c) => `${c.name || c.email}${c.email && c.name ? ` (${c.email})` : ""}`}
+                getOptionSearchText={(c) => `${c.name || ""} ${c.email || ""}`}
+                allowClear
+              />
             </div>
           </div>
         </div>
 
         <div style={styles.buttonGroup}>
-           {isAdmin && isEdit && (
-    <button
-      onClick={handleDeleteRecord}
-      style={{
-        background: "red",
-        color: "white",
-        padding: "10px",
-        borderRadius: 6,
-        border: "none",
-        cursor: "pointer"
-      }}
-    >
-      Delete Lead
-    </button>
-  )}
+          {isAdmin && isEdit && (
+            <button
+              onClick={handleDeleteRecord}
+              style={styles.deleteBtn}
+            >
+              Delete Lead
+            </button>
+          )}
           <button
   onClick={handleSaveLead}
   style={styles.addBtn}
@@ -727,7 +1077,7 @@ const styles = {
   },
   drawer: {
     background: "#fff",
-    width: 420,
+    width: "min(620px, 100vw)",
     height: "100%",
     boxShadow: "-4px 0 12px rgba(128,0,0,0.3)",
     borderTopLeftRadius: 10,
@@ -744,6 +1094,17 @@ const styles = {
   title: {
     fontSize: 20,
     color: "#800000",
+    fontWeight: 700,
+  },
+  kpiBadge: {
+    display: "inline-block",
+    marginTop: 6,
+    background: "#fff7e6",
+    color: "#800000",
+    border: "1px solid #f3d7a8",
+    borderRadius: 999,
+    padding: "4px 10px",
+    fontSize: 12,
     fontWeight: 700,
   },
   closeBtn: {
@@ -771,18 +1132,23 @@ const styles = {
     color: "#800000",
     fontWeight: 600,
     marginBottom: 6,
+    fontSize: 13,
   },
   input: {
-    padding: 10,
-    borderRadius: 6,
-    border: "1px solid #800000",
-    color: "#800000",
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid rgba(128,0,0,0.35)",
+    color: "#111827",
+    fontSize: 13,
+    background: "#fff",
   },
   select: {
-    padding: 10,
-    borderRadius: 6,
-    border: "1px solid #800000",
-    color: "#800000",
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid rgba(128,0,0,0.35)",
+    color: "#111827",
+    fontSize: 13,
+    background: "#fff",
   },
   buttonGroup: {
     padding: 12,
@@ -812,5 +1178,16 @@ const styles = {
     borderRadius: 6,
     fontWeight: 700,
     cursor: "pointer",
+  },
+  deleteBtn: {
+    flex: 1,
+    background: "linear-gradient(135deg, #b91c1c, #dc2626)",
+    color: "#fff",
+    border: "none",
+    padding: 10,
+    borderRadius: 8,
+    fontWeight: 700,
+    cursor: "pointer",
+    boxShadow: "0 6px 16px rgba(185,28,28,0.25)",
   },
 };

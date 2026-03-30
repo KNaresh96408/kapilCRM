@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { db } from "../../firebaseConfig";
-import { collection, getDocs, setDoc, doc } from "firebase/firestore";
+import { setDoc, doc } from "firebase/firestore";
+import { fetchCollectionREST } from "../../helpers/firestoreRest";
+
 
 export default function ModulePermission({ moduleName }) {
   const [users, setUsers] = useState([]);
@@ -11,34 +13,30 @@ export default function ModulePermission({ moduleName }) {
 // Load users + permissions (FAST LOAD)
 useEffect(() => {
   const loadData = async () => {
+    const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+    const token = stored.idToken;
 
-    // 1️⃣ LOAD CACHED PERMISSIONS INSTANTLY
-    const cached = localStorage.getItem(`modulePerm_${moduleName}`);
-    if (cached) {
-      setPermissions(JSON.parse(cached));
-    }
+    if (!token) return;
 
-    // 2️⃣ LOAD USERS
-    const snap = await getDocs(collection(db, "Users"));
-    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    setUsers(list);
+    const usersData = await fetchCollectionREST("Users", token);
+    const normalizedUsers = (usersData || []).map((u) => ({
+      ...u,
+      name: u.Name || u.name || u.displayName || u.email || u.Email || u.id || "",
+      role: String(u.role || u.Role || u.designation || u.Designation || "").toLowerCase(),
+    }));
+    setUsers(normalizedUsers);
 
-    // 3️⃣ LOAD PERMISSIONS FROM FIRESTORE (BACKGROUND)
-    const permCol = collection(db, "modulePermissions", moduleName, "users");
-    const permSnap = await getDocs(permCol);
+    const permDocs = await fetchCollectionREST(
+      `modulePermissions/${moduleName}/users`,
+      token
+    );
 
-    let stored = {};
-    permSnap.docs.forEach((d) => {
-      stored[d.id] = d.data();
+    const perms = {};
+    (permDocs || []).forEach((p) => {
+      perms[p.id] = p;
     });
 
-    setPermissions(stored);
-
-    // 4️⃣ UPDATE CACHE
-    localStorage.setItem(
-      `modulePerm_${moduleName}`,
-      JSON.stringify(stored)
-    );
+    setPermissions(perms);
   };
 
   loadData();
@@ -112,13 +110,13 @@ useEffect(() => {
 
         <tbody>
           {users.map((u) => {
-            const isAdmin = u.role === "admin";
+            const isAdmin = String(u.role || "").toLowerCase() === "admin";
             const p = permissions[u.id] || {};
 
             return (
               <tr key={u.id} style={styles.row}>
                 <td style={styles.userCell}>
-                  {u.Name} {isAdmin ? " (Admin)" : ""}
+                  {u.name || u.Name || u.email || u.Email || u.id} {isAdmin ? " (Admin)" : ""}
                 </td>
 
                 {["create", "read", "update", "delete"].map((key) => (

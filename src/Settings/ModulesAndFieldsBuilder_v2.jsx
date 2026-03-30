@@ -55,24 +55,55 @@ export default function ModulesAndFieldsBuilderV2({ onClose }) {
   }, [selectedModule, activeLayout]);
 
   const loadModules = async () => {
-    const q = await getDocs(collection(db, "crm_modules"));
-    const arr = [];
-    q.forEach((d) => arr.push({ id: d.id, ...d.data() }));
-    setModules(arr);
-  };
+    try {
+      const rows = await import('../../helpers/firestoreFetch').then((m) => m.fetchCollectionDocs('crm_modules'));
+      const arr = rows.map((r) => ({ id: r.id, ...r }));
+      setModules(arr);
+    } catch (err) {
+      console.warn('Modules loader failed:', err);
+      setModules([]);
+    }
+  }; 
 
   const loadModuleLayout = async (moduleId) => {
-    const ref = doc(db, "crm_fields", moduleId);
-    const snap = await getDoc(ref);
-    if (snap.exists()) {
-      const data = snap.data();
-      if (activeLayout === "create") setLayout(data.createLayout || []);
-      else if (activeLayout === "detail") setLayout(data.detailLayout || []);
-      else if (activeLayout === "quick") setLayout(data.quickCreateLayout || []);
-    } else {
-      setLayout([]);
+    const TIMEOUT_MS = 2500;
+    try {
+      const refDoc = doc(db, "crm_fields", moduleId);
+      const getPromise = getDoc(refDoc);
+      const snap = await Promise.race([
+        getPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('crm_fields fetch timeout')), TIMEOUT_MS)),
+      ]);
+
+      if (snap && snap.exists && snap.exists()) {
+        const data = snap.data() || {};
+        if (activeLayout === 'create') setLayout(data.createLayout || []);
+        else if (activeLayout === 'detail') setLayout(data.detailLayout || []);
+        else if (activeLayout === 'quick') setLayout(data.quickCreateLayout || []);
+        return;
+      }
+    } catch (err) {
+      console.warn('🟡 loadModuleLayout DB failed, trying REST', err && (err.message || err));
+      try {
+        const stored = typeof window !== 'undefined' ? localStorage.getItem('kp-user') : null;
+        const parsed = stored ? JSON.parse(stored) : null;
+        const token = (parsed && parsed.idToken) || null;
+        if (token) {
+          const { fetchDocumentREST } = await import('../../helpers/firestoreRest');
+          const rest = await fetchDocumentREST(`crm_fields/${moduleId}`, token);
+          const layoutData = rest || {};
+          if (activeLayout === 'create') setLayout(layoutData.createLayout || []);
+          else if (activeLayout === 'detail') setLayout(layoutData.detailLayout || []);
+          else if (activeLayout === 'quick') setLayout(layoutData.quickCreateLayout || []);
+          return;
+        }
+      } catch (restErr) {
+        console.warn('🟡 loadModuleLayout REST failed', restErr && (restErr.message || restErr));
+      }
     }
-  };
+
+    setLayout([]);
+  }; 
 
   const handleSelectModule = async (m) => {
     setSelectedModule(m);

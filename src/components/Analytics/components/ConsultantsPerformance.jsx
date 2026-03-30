@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../../firebase/firebaseConfig";
+import { getDocsWithFallback } from "../../../helpers/firestoreFetch";
 import { useDashboardFilters } from "../../../context/DashboardFilterContext";
 import { isDateInFilter } from "../../utils/isDateInFilter";
 import { getScopedQuery } from "../../../helpers/getScopedQuery";
@@ -38,11 +37,11 @@ export default function ConsultantsPerformance() {
 
     // ---------------- DEALS ----------------
     const q = await getScopedQuery("deals");
-const dealsSnap = await getDocs(q);
+    const dealRows = await getDocsWithFallback(q, "deals", null);
     let uniqueDeals = new Set();
 
-dealsSnap.forEach(doc => {
-  const d = doc.data();
+dealRows.forEach((row) => {
+  const d = row.data || row;
 
   if (filters.zone !== "All" && (d.sales_zone || "") !== filters.zone) return;
   if (!isDateInFilter(d.createdAt, filters)) return;
@@ -60,11 +59,11 @@ dealsSnap.forEach(doc => {
 });
 
     // ---------------- SALES ORDERS ----------------
-   const soQuery = await getScopedQuery("salesOrders");
-const soSnap = await getDocs(soQuery);
+  const soQuery = await getScopedQuery("salesOrders");
+  const soRows = await getDocsWithFallback(soQuery, "salesOrders", null);
 
-    soSnap.forEach(doc => {
-      const s = doc.data();
+   soRows.forEach((row) => {
+    const s = row.data || row;
 
       if (filters.zone !== "All" && (s.sales_zone || "") !== filters.zone) return;
       if (!isDateInFilter(s.createdAt, filters)) return;

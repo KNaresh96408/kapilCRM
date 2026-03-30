@@ -1,6 +1,6 @@
 import React from "react";
 
-const AppsProfile = ({ user, onClose, onLogout }) => {
+const AppsProfile = ({ user, onClose, onLogout, onEditProfile }) => {
   return (
     <div
       className="profile-box"
@@ -52,9 +52,34 @@ const AppsProfile = ({ user, onClose, onLogout }) => {
         <strong>Role:</strong> {user?.role ?? "User"}
       </p>
 
+      {/* EDIT PROFILE */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onEditProfile && onEditProfile();
+        }}
+        style={{
+          width: "100%",
+          marginTop: "15px",
+          padding: "10px",
+          borderRadius: "8px",
+          border: "1px solid #800000",
+          background: "#fff",
+          color: "#800000",
+          cursor: "pointer",
+          fontWeight: "bold",
+        }}
+      >
+        Edit Profile
+      </button>
+
       {/* LOGOUT */}
       <button
-        onClick={onLogout}
+        onClick={(e) => {
+          e.stopPropagation();
+          console.log("🔴 Logout button clicked in AppsProfile");
+          onLogout && onLogout();
+        }}
         style={{
           width: "100%",
           marginTop: "15px",
@@ -65,6 +90,8 @@ const AppsProfile = ({ user, onClose, onLogout }) => {
           color: "white",
           cursor: "pointer",
           fontWeight: "bold",
+          position: "relative",
+          zIndex: 10001,
         }}
       >
         Logout

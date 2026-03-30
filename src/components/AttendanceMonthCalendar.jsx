@@ -1,5 +1,5 @@
 // src/components/AttendanceMonthCalendar.jsx
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { getTodayStr } from "../firebase/attendanceFunctions";
 
 /**
@@ -15,6 +15,17 @@ import { getTodayStr } from "../firebase/attendanceFunctions";
 const MAX_VALID_MINUTES = 24 * 60;
 
 function pad(n) { return String(n).padStart(2, "0"); }
+
+const getAttendanceMonthRangeFromDate = (baseDate = new Date()) => {
+  const startDate = new Date(baseDate.getFullYear(), baseDate.getMonth() - 1, 26);
+  const endDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), 25);
+  return {
+    startDate,
+    endDate,
+    from: localYYYYMMDDFromDate(startDate),
+    to: localYYYYMMDDFromDate(endDate),
+  };
+};
 
 function localYYYYMMDDFromDate(d) {
   if (!d || !(d instanceof Date)) return null;
@@ -56,16 +67,27 @@ function parseCheckInDate(ts) {
   return null;
 }
 
-export default function AttendanceMonthCalendar({
+function AttendanceMonthCalendar({
   records = [],
   holidays = [],
   workingDays = [],      // NEW
-  currentUserId = null
+  approvedLeaves = [],
+  currentUserId = null,
+  currentUserEmail = "",
+  onMonthChange,
 }) {
   const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
     navigator.userAgent
   );
   const [monthOffset, setMonthOffset] = useState(0);
+
+  // ⭐ Calculate live minutes every 60s for TODAY's running check-in
+  const [now, setNow] = useState(Date.now());
+  
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const focus = useMemo(() => {
     const d = new Date();
@@ -74,10 +96,13 @@ export default function AttendanceMonthCalendar({
     return d;
   }, [monthOffset]);
 
-  const year = focus.getFullYear();
-  const month = focus.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const lastDay = new Date(year, month + 1, 0);
+  useEffect(() => {
+    if (typeof onMonthChange !== "function") return;
+    const { from, to } = getAttendanceMonthRangeFromDate(focus);
+    onMonthChange(from, to);
+  }, [focus, onMonthChange]);
+
+  const { startDate, endDate } = getAttendanceMonthRangeFromDate(focus);
 
   // map of records { YYYY-MM-DD : doc }
   const attendanceMap = useMemo(() => {
@@ -90,7 +115,6 @@ let dateKey = null;
 if (typeof r.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.date)) {
   dateKey = r.date;
 }
-
 // 2️⃣ If recordDate exists and looks ISO → extract date part
 else if (typeof r.recordDate === "string" && r.recordDate.includes("T")) {
   dateKey = r.recordDate.split("T")[0];
@@ -140,6 +164,50 @@ if (!dateKey) return;
     return m;
   }, [holidays, currentUserId]);
 
+  const approvedLeaveMap = useMemo(() => {
+    const map = {};
+    const email = String(currentUserEmail || "").trim().toLowerCase();
+
+    const normalizeTypeLabel = (type) => {
+      const t = String(type || "").toLowerCase();
+      if (t === "leave") return "Leave";
+      if (t === "comp_off") return "Comp-Off";
+      if (t === "early_checkin") return "Early Check-in";
+      if (t === "early_checkout") return "Early Check-out";
+      return "Leave";
+    };
+
+    const isApproved = (row) => {
+      const s1 = String(row?.final_status || "").toLowerCase();
+      const s2 = String(row?.status || "").toLowerCase();
+      return s1 === "approved" || s2 === "approved";
+    };
+
+    const belongsToCurrentUser = (row) => {
+      if (currentUserId && row?.userId && row.userId === currentUserId) return true;
+      if (email && row?.userEmail && String(row.userEmail).toLowerCase() === email) return true;
+      return false;
+    };
+
+    (approvedLeaves || []).forEach((row) => {
+      if (!row || !isApproved(row) || !belongsToCurrentUser(row)) return;
+      const from = String(row.from || "");
+      const to = String(row.to || from);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return;
+
+      let cursor = from;
+      const label = normalizeTypeLabel(row.type);
+      while (cursor <= to) {
+        if (!map[cursor]) map[cursor] = { label, type: row.type || "leave" };
+        const d = new Date(`${cursor}T00:00:00`);
+        d.setDate(d.getDate() + 1);
+        cursor = localYYYYMMDDFromDate(d);
+      }
+    });
+
+    return map;
+  }, [approvedLeaves, currentUserId, currentUserEmail]);
+
   // ⭐ WORKING DAY override map (NEW)
   const workingDayMap = useMemo(() => {
     const m = {};
@@ -158,17 +226,18 @@ if (!dateKey) return;
   const todayStrLocal = getTodayStr();
 
   const days = [];
-  for (let i = 0; i < firstDay.getDay(); i++) days.push({ empty: true });
+  for (let i = 0; i < startDate.getDay(); i++) days.push({ empty: true });
 
-  for (let i = 1; i <= lastDay.getDate(); i++) {
-    const d = new Date(year, month, i);
-    d.setHours(0, 0, 0, 0);
-    const dateStr = localYYYYMMDDFromDate(d);
+  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+    const dayDate = new Date(d);
+    dayDate.setHours(0, 0, 0, 0);
+    const dateStr = localYYYYMMDDFromDate(dayDate);
 
-    const isSunday = d.getDay() === 0;
+    const isSunday = dayDate.getDay() === 0;
     const holidayObj = holidayMap[dateStr];
     const workingOverride = workingDayMap[dateStr];   // ⭐
     const record = attendanceMap[dateStr];
+    const approvedLeave = approvedLeaveMap[dateStr];
 
     const isPast = dateStr < todayStrLocal;
     const isToday = dateStr === todayStrLocal;
@@ -182,7 +251,12 @@ if (!dateKey) return;
     const treatAsWorkingDay = !!workingOverride;
 
     // Sunday / Holiday
-    if (!treatAsWorkingDay && (isSunday || holidayObj)) {
+    if (approvedLeave) {
+      bg = "#d9ecff";
+      text = approvedLeave.label;
+      title = approvedLeave.label;
+    }
+    else if (!treatAsWorkingDay && (isSunday || holidayObj)) {
       bg = "#e2c4ff";
       text = holidayObj?.label || "Holiday";
       title = holidayObj?.label || "Holiday / Sunday";
@@ -203,11 +277,15 @@ if (!dateKey) return;
       else {
         let liveMinutes = null;
         if (isToday && hasCheckIn && !hasCheckOut) {
+          // ⭐ Calculate live minutes using current time
           const ci = parseCheckInDate(
             record.checkInTime || record._clientCheckIn || record.checkIn
           );
-          if (ci) liveMinutes = Math.floor((Date.now() - ci.getTime()) / 60000);
-          else liveMinutes = minutes;
+          if (ci) {
+            liveMinutes = Math.floor((now - ci.getTime()) / 60000);
+          } else {
+            liveMinutes = minutes;
+          }
         }
 
         const forgotPast = isPast && hasCheckIn && !hasCheckOut && minutes === 0;
@@ -240,7 +318,7 @@ if (!dateKey) return;
           }
         } 
         else {
-          if (isPastOrToday) {
+          if (isPast) {
             bg = "#ffb3b3";
             text = "Absent";
             title = "Absent";
@@ -248,16 +326,17 @@ if (!dateKey) return;
         }
       }
     } 
-    else if (isPastOrToday) {
+    else if (isPast) {
       bg = "#ffb3b3";
       text = "Absent";
       title = "Absent";
     }
 
-    days.push({ date: i, full: dateStr, bg, text, title });
+    days.push({ date: dayDate.getDate(), full: dateStr, bg, text, title });
   }
 
   const monthName = focus.toLocaleString(undefined, { month: "long", year: "numeric" });
+  const rangeLabel = `${startDate.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })} - ${endDate.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}`;
 
 return (
   <div
@@ -268,7 +347,7 @@ return (
     }}
   >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h3 style={{ marginBottom: 10, color: "#800000" }}>Monthly Attendance — {monthName}</h3>
+        <h3 style={{ marginBottom: 10, color: "#800000" }}>Monthly Attendance — {monthName} ({rangeLabel})</h3>
         <div>
           <button onClick={() => setMonthOffset(m => m - 1)} style={navBtn}>Prev</button>
           <button onClick={() => setMonthOffset(0)} style={{ ...navBtn, marginLeft: 8 }}>This Month</button>
@@ -335,6 +414,9 @@ return (
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ width: 18, height: 18, background: "#e2c4ff", borderRadius: 3 }} /> Holiday
           </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ width: 18, height: 18, background: "#d9ecff", borderRadius: 3 }} /> Leave / Comp-Off / Early Check
+          </div>
         </div>
       </div>
     </div>
@@ -351,3 +433,5 @@ const navBtn = {
   cursor: "pointer",
   fontWeight: 600,
 };
+
+export default React.memo(AttendanceMonthCalendar);

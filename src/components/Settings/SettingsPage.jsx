@@ -13,15 +13,10 @@ export default function SettingsPage() {
   useEffect(() => {
     const loadModules = async () => {
       try {
-        const snap = await getDocs(collection(db, "crm_modules"));
-        const firestoreModules = snap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
-
-        setModules(firestoreModules);
+        const rows = await import('../../helpers/firestoreFetch').then((m) => m.fetchCollectionDocs('crm_modules'));
+        setModules(rows);
       } catch (err) {
-        console.error("Error loading modules:", err);
+        console.error("Error loading modules (fallback):", err);
         setModules(defaultModules); // fallback
       }
     };

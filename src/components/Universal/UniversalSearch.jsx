@@ -25,14 +25,12 @@ export default function UniversalSearch({ onNavigate }) {
 
   const loadModules = async () => {
     try {
-      const snap = await getDocs(collection(db, "crm_modules"));
-      const arr = snap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
+      const rows = await import('../../helpers/firestoreFetch').then((m) => m.fetchCollectionDocs('crm_modules'));
+      const arr = rows.map((r) => ({ id: r.id, ...r }));
       setModules(arr);
     } catch (e) {
-      console.error("UniversalSearch: failed to load modules", e);
+      console.error("UniversalSearch: failed to load modules (fallback)", e);
+      setModules([]);
     }
   };
 

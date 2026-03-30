@@ -18,6 +18,7 @@ import {
   where,
   orderBy
 } from "firebase/firestore";
+import { fetchCollectionREST } from "../helpers/firestoreRest";
 
 // ------------------------------------------------------------
 // CHECK-IN
@@ -86,6 +87,21 @@ export async function addHoliday(dateString, reason = "Holiday") {
 }
 
 export async function getHolidays() {
-  const snap = await getDocs(collection(db, "holidays"));
-  return snap.docs.map((d) => d.data().date);
+  try {
+    const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+    const token = stored.idToken;
+
+    if (!token) throw new Error("No idToken for getHolidays");
+
+    const { fetchCollectionREST } = await import("../helpers/firestoreRest");
+
+    const rows = await fetchCollectionREST("holidays", token);
+
+    return (rows || [])
+      .map((d) => d.date)
+      .filter(Boolean);
+  } catch (e) {
+    console.warn("getHolidays failed (REST)", e);
+    return [];
+  }
 }

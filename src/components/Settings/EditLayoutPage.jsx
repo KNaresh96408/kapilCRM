@@ -9,8 +9,7 @@ import {
   query,
   limit,
 } from "firebase/firestore";
-import { db, serverTimestamp } from "../../firebaseConfig";
-import { getAuth } from "firebase/auth";
+import { auth, db, serverTimestamp } from "../../firebaseConfig";
 
 const TOOLBOX = [
   { type: "text", label: "Single Line" },
@@ -56,7 +55,6 @@ function getQueryModule() {
 }
 
 export default function EditLayoutPage() {
-  const auth = getAuth();
   const [loading, setLoading] = useState(true);
   const [fields, setFields] = useState([]); // array of {name,label,type,required,options}
   const [layout, setLayout] = useState([

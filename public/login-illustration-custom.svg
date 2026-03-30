@@ -1,0 +1,61 @@
+<svg width="900" height="720" viewBox="0 0 900 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="phoneBody" x1="180" y1="120" x2="500" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2C46C8"/>
+      <stop offset="1" stop-color="#1D2B89"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="250" y1="170" x2="430" y2="500" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4462F0"/>
+      <stop offset="1" stop-color="#2A42BF"/>
+    </linearGradient>
+    <linearGradient id="pink" x1="510" y1="420" x2="700" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF4D93"/>
+      <stop offset="1" stop-color="#F53482"/>
+    </linearGradient>
+    <filter id="shadow" x="120" y="80" width="440" height="600" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#1A255F" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <ellipse cx="350" cy="620" rx="220" ry="44" fill="#CDD4E7"/>
+
+  <path d="M120 500L290 330L460 500L310 560L120 500Z" fill="#D9DFEE"/>
+
+  <g filter="url(#shadow)">
+    <path d="M220 130L450 250V560L220 440V130Z" fill="url(#phoneBody)"/>
+    <path d="M244 178L425 272V520L244 426V178Z" fill="url(#screen)"/>
+  </g>
+
+  <rect x="270" y="324" width="132" height="24" rx="12" fill="#AFC1F7" stroke="#E5ECFF" stroke-width="3"/>
+  <rect x="270" y="372" width="132" height="24" rx="12" fill="#AFC1F7" stroke="#E5ECFF" stroke-width="3"/>
+  <rect x="270" y="420" width="132" height="24" rx="12" fill="#AFC1F7" stroke="#E5ECFF" stroke-width="3"/>
+
+  <circle cx="330" cy="236" r="38" fill="#FF3D8A"/>
+  <path d="M330 216C319 216 310.5 224.3 310.5 234.5C310.5 241.6 314.7 248.1 320.9 251.4C318.7 253.1 316.8 255.3 315.6 257.9C314.7 259.8 316.1 262 318.2 262H341.8C343.9 262 345.3 259.8 344.4 257.9C343.2 255.3 341.3 253.1 339.1 251.4C345.3 248.1 349.5 241.6 349.5 234.5C349.5 224.3 341 216 330 216Z" fill="white"/>
+
+  <rect x="286" y="458" width="78" height="28" rx="14" fill="#FF4D93"/>
+  <text x="325" y="477" text-anchor="middle" font-size="12" fill="white" font-family="Arial, sans-serif" font-weight="700">LOGIN</text>
+
+  <circle cx="332" cy="532" r="16" fill="#DCE5FF"/>
+
+  <circle cx="564" cy="480" r="40" fill="#111827"/>
+  <path d="M548 486C560 470 575 469 585 486V532H548V486Z" fill="url(#pink)"/>
+  <rect x="548" y="532" width="19" height="52" rx="9" fill="#293CBB"/>
+  <rect x="566" y="532" width="19" height="52" rx="9" fill="#2F45C9"/>
+  <ellipse cx="556" cy="592" rx="13" ry="8" fill="#F65EA2"/>
+  <ellipse cx="578" cy="592" rx="13" ry="8" fill="#F65EA2"/>
+
+  <path d="M495 496C532 487 545 472 551 446" stroke="#FF4D93" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="552" cy="446" r="8" fill="#FF4D93"/>
+
+  <circle cx="502" cy="208" r="10" stroke="#FF5CA0" stroke-width="4"/>
+  <circle cx="612" cy="286" r="12" stroke="#FF5CA0" stroke-width="4"/>
+  <path d="M514 272C554 224 604 229 641 268" stroke="#98A4C7" stroke-width="3" stroke-dasharray="6 7"/>
+
+  <path d="M610 388C624 361 652 343 680 338" stroke="#D3DBEF" stroke-width="10" stroke-linecap="round"/>
+  <path d="M640 372C652 344 680 326 710 321" stroke="#F7B7CF" stroke-width="12" stroke-linecap="round"/>
+
+  <path d="M166 316L130 286L158 284L166 252L182 284L210 286L186 301" fill="#DCE4F7"/>
+  <path d="M160 586C184 582 198 568 216 552" stroke="#4B64D2" stroke-width="4" stroke-linecap="round"/>
+  <path d="M616 586C638 576 656 562 672 546" stroke="#4B64D2" stroke-width="4" stroke-linecap="round"/>
+</svg>

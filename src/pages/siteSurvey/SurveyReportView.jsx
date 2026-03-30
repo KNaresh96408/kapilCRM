@@ -1,10 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { doc, getDoc } from "firebase/firestore";
-import { db } from "../../firebaseConfig";
+import { db, storage} from "../../firebaseConfig";
 
 import {
-  getStorage,
   ref,
   listAll,
   getDownloadURL,
@@ -74,7 +73,6 @@ export default function SurveyReportView() {
 
   async function loadFiles() {
     try {
-      const storage = getStorage();
       const folderRef = ref(
         storage,
         `deals/${dealId}/attachments/siteSurveyReport`
@@ -118,18 +116,23 @@ export default function SurveyReportView() {
 
     const zip = new JSZip();
 
-    for (let f of files) {
-      const res = await fetch(f.url);
-      const blob = await res.blob();
-      zip.file(f.name, blob);
-    }
+    const downloads = files.map(async (f) => {
+      const res = await fetch(f.url, { cache: "force-cache" });
+      const buffer = await res.arrayBuffer();
+      zip.file(f.name || "file", buffer, { binary: true });
+    });
 
-    const content = await zip.generateAsync({ type: "blob" });
+    await Promise.all(downloads);
+
+    const content = await zip.generateAsync({
+      type: "blob",
+      compression: "STORE",
+    });
     saveAs(content, `SiteSurvey_${dealId}.zip`);
   }
 
   function printPage() {
-    window.print();
+    requestAnimationFrame(() => window.print());
   }
 
   if (loading) return <h3 style={{ padding: 20 }}>Loading...</h3>;

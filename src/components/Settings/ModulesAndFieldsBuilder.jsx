@@ -16,12 +16,13 @@ const ModulesAndFieldsBuilder = () => {
 
   useEffect(() => {
     const loadModules = async () => {
-      const snapshot = await getDocs(collection(db, "crm_modules"));
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setModules(data);
+      try {
+        const rows = await import('../../helpers/firestoreFetch').then((m) => m.fetchCollectionDocs('crm_modules'));
+        setModules(rows);
+      } catch (err) {
+        console.error('Modules loader failed (fallback):', err);
+        setModules([]);
+      }
     };
 
     loadModules();

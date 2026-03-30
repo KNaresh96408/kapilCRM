@@ -1,9 +1,11 @@
 import React, { useRef } from "react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
+import { resolveQuoteNo } from "../helpers/quotationNumber";
 
 const QuotationPDFModal = ({ data, onClose }) => {
   const pdfRef = useRef();
+  const quoteNo = resolveQuoteNo(data);
 
   const handleDownloadPDF = async () => {
     const element = pdfRef.current;
@@ -22,13 +24,14 @@ const QuotationPDFModal = ({ data, onClose }) => {
         position: "fixed",
         top: 0,
         left: 0,
-        width: "100vw",
-        height: "100vh",
+        right: 0,
+        bottom: 0,
         backgroundColor: "rgba(0,0,0,0.7)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         zIndex: 1000,
+        overflow: "hidden",
       }}
     >
       <div
@@ -44,7 +47,7 @@ const QuotationPDFModal = ({ data, onClose }) => {
         <div ref={pdfRef} style={{ fontFamily: "Poppins" }}>
           <h2 style={{ textAlign: "center" }}>Offer for {data.customerName}</h2>
           <p style={{ textAlign: "center" }}>System Size: {data.capacity} kW</p>
-          <p style={{ textAlign: "center" }}>Quotation ID: {data.quotationId || "Draft"}</p>
+          <p style={{ textAlign: "center" }}>Quote No: {quoteNo || "Draft"}</p>
 
           <table
             style={{

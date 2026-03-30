@@ -1,5 +1,6 @@
 // ✅ src/components/QuotationDrawer.jsx
 import React, { useEffect, useState } from "react";
+import { buildQuoteNo, resolveQuoteNo } from "../helpers/quotationNumber";
 
 /**
  * QuotationDrawer
@@ -85,10 +86,14 @@ const QuotationDrawer = ({ open, onClose, deal, onSave }) => {
       return;
     }
 
+    const kpiId = deal.autoId || deal.kpiId || dealId;
+    const quoteNo = buildQuoteNo(kpiId);
+
     const quotationObj = {
-      quotationId: `QTN-${String(Date.now()).slice(-6)}`,
+      quotationId: quoteNo || `QTN-${String(Date.now()).slice(-6)}`,
+      quoteNo,
       dealId,
-      kpiId: deal.autoId || deal.kpiId || dealId,
+      kpiId,
       projectType: deal.projectType || "Residential",
 
         teleSale:
@@ -123,6 +128,9 @@ consultantName:
 
       createdAt: new Date(),
     };
+
+    quotationObj.quoteNo = resolveQuoteNo(quotationObj);
+    quotationObj.quotationId = quotationObj.quoteNo || quotationObj.quotationId;
 
     try {
       setSaving(true);

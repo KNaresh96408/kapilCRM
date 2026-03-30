@@ -4,17 +4,18 @@ import {
   doc,
   getDoc,
   addDoc,
-  deleteDoc,
+  updateDoc,  
   collection,
-  serverTimestamp,
   query,
   where,
   getDocs,
+  serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 import QuotationPDFLayout from "./QuotationPDFLayout";
 import { usePermission } from "../hooks/usePermission";
 import { useNavigate } from "react-router-dom";
+import { getKpiIdFromRecord, resolveQuoteNo } from "../helpers/quotationNumber";
 
 
 
@@ -72,7 +73,30 @@ const numberToWords = (num) => {
   return inWords(num).trim() + " Rupees";
 };
 
-const QuotationPreview = ({ data }) => {
+const normalizeScopeValue = (v) =>
+  String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9]/g, "");
+
+const pickScopedDisplay = (rawValue, labelValue) => {
+  const raw = String(rawValue || "").trim();
+  const label = String(labelValue || "").trim();
+  if (!label) return raw;
+  if (!raw) return label;
+  return normalizeScopeValue(raw) === normalizeScopeValue(label) ? label : raw;
+};
+
+const projectExistsByKpi = async (kpiId) => {
+  const cleanKpi = String(kpiId || "").trim();
+  if (!cleanKpi) return false;
+  const q = query(collection(db, "projects"), where("kpiId", "==", cleanKpi));
+  const snap = await getDocs(q);
+  return !snap.empty;
+};
+
+const QuotationPreview = ({ data, onClose, onSaveQuotation }) => {
 const perm = usePermission("sales-orders");
 
   // incoming quotation/deal-like data (prop name `data` from parent)
@@ -81,32 +105,53 @@ const perm = usePermission("sales-orders");
   const [editableData, setEditableData] = useState({ ...data });
   const [summary, setSummary] = useState(null);
   const [showPDF, setShowPDF] = useState(false);
+  const [savingQuotation, setSavingQuotation] = useState(false);
+  const [hasSaved, setHasSaved] = useState(false);
 
   // Convert modal state
   const [showConvertModal, setShowConvertModal] = useState(false);
-  const [convertMode, setConvertMode] = useState(null); // "SO" | "INVOICE"
+  const [convertMode, setConvertMode] = useState("SO"); // "SO" | "INVOICE"
   const [firstPayment, setFirstPayment] = useState("");
   const [creating, setCreating] = useState(false);
 
   // Auto-fill some fields when `data` updates
   useEffect(() => {
     if (!data) return;
-    setEditableData((prev) => ({
+    setEditableData((prev) => {
+      const resolvedCapacity = Number(data.capacity ?? data.size ?? prev.capacity ?? 0) || 0;
+      const resolvedSystemQty = Number(data.systemQty ?? data.capacity ?? prev.systemQty ?? resolvedCapacity) || 1;
+      const resolvedStructureRate = Number(data.structureRate ?? prev.structureRate ?? 0) || 0;
+      const resolvedStructureQty =
+        resolvedStructureRate > 0
+          ? Number(data.structureQty ?? prev.structureQty ?? 0)
+          : 0;
+      return {
       ...prev,
       customerName: data.customerName || data.name || "",
       customerPhone: data.customerPhone || data.phone || "",
       location: data.location || data.address || "",
-      capacity: data.capacity || data.size || 0,
+      capacity: resolvedCapacity,
+      systemQty: resolvedSystemQty,
+      gst: data.gst ?? 8.9,
       // also copy any quotation fields that might exist directly on `data`
       systemCost: data.systemCost ?? prev.systemCost ?? editableData.systemCost ?? 0,
-      gst: data.gst ?? prev.gst,
-      subsidy: data.subsidy ?? prev.subsidy,
+      structureRate: resolvedStructureRate,
+      structureQty: Number.isFinite(resolvedStructureQty) ? resolvedStructureQty : 0,
       panelBrand: data.panelBrand ?? prev.panelBrand,
       panelWatt: data.panelWatt ?? prev.panelWatt,
       panelType: data.panelType ?? prev.panelType,
       inverterBrand: data.inverterBrand ?? prev.inverterBrand,
-      inverterSize: data.inverterSize ?? prev.inverterSize,
-    }));
+      inverterSize:
+        prev.inverterSize ??
+        data.inverterSize ??
+        resolvedCapacity ??
+        1,
+      };
+    });
+  }, [data]);
+
+  useEffect(() => {
+    setHasSaved(Boolean(data?.isSaved || data?.savedAt || data?.createdAt));
   }, [data]);
 
   // Fetch template (if you have templates in Firestore)
@@ -129,32 +174,51 @@ const perm = usePermission("sales-orders");
 
   // Price summary calculation (system cost * capacity + gst - subsidy)
   useEffect(() => {
-    const sc = Number(editableData.systemCost || 0);
-    const cap = Number(editableData.capacity || 0);
+  const systemRate = Number(editableData.systemCost || 0);
+  const systemQty = Number(editableData.systemQty || editableData.capacity || 0);
+  const systemTotal = systemRate * systemQty;
 
-    const systemTotal = Math.round(sc * cap);
-    const gstRate = Number(editableData.gst ?? template?.pricing?.gst ?? 0);
-    const gstValue = Math.round((systemTotal * gstRate) / 100);
-    const subsidy = Number(editableData.subsidy || 0);
+  const structureRate = Number(editableData.structureRate || 0);
+  const structureQty = Number(editableData.structureQty || 0);
+  const structureTotal = structureRate * structureQty;
 
-    const totalCost = Math.round(systemTotal + gstValue - subsidy);
+  const taxableAmount = systemTotal + structureTotal;
 
-    if (!isNaN(totalCost)) {
-      setSummary({
-        systemTotal,
-        gstRate,
-        gstValue,
-        totalCost,
-        inWords: numberToWords(Math.round(totalCost)),
-      });
+  const gstRate = Number(editableData.gst ?? 8.9) || 0;
+  const gstValue = Math.round((taxableAmount * gstRate) / 100);
+
+  const totalCost = Math.round(taxableAmount + gstValue);
+
+  setSummary({
+    systemTotal,
+    structureTotal,
+    gstRate,
+    gstValue,
+    totalCost,
+    inWords: numberToWords(totalCost),
+  });
+}, [editableData]);
+const handleChange = (field, value) => {
+  setEditableData((prev) => ({ ...prev, [field]: value }));
+};
+// 🔥 Auto-sync inverter size with capacity (only if empty)
+useEffect(() => {
+  setEditableData((prev) => {
+    if (prev.inverterSize !== undefined && prev.inverterSize !== "") {
+      return prev; // user already edited
     }
-  }, [editableData, template]);
+    return {
+      ...prev,
+      inverterSize: prev.capacity || 1,
+    };
+  });
+}, [editableData.capacity]);
 
 if (perm.loading) {
   return <p style={{ padding: 20, color: "#800000" }}>Checking permissions…</p>;
 }
 
-if (!perm.read && !perm.create) {
+if (!perm.read) {
   return (
     <div style={{ padding: 20, textAlign: "center", color: "#800000" }}>
       <h2>🚫 You don’t have permission to view Sales Orders.</h2>
@@ -162,14 +226,59 @@ if (!perm.read && !perm.create) {
   );
 }
 
-  if (!summary) {
-    return <div style={{ padding: 30 }}>Loading...</div>;
-  }
+if (!summary) {
+  return <div style={{ padding: 30 }}>Loading...</div>;
+}
+const maroon = "#800000";
+const caseId = getKpiIdFromRecord(editableData) || getKpiIdFromRecord(data);
+const quoteNo = resolveQuoteNo({ ...editableData, kpiId: caseId }) || (caseId ? `Q/No/${caseId}` : "");
 
-  const maroon = "#800000";
+  const handleClosePreview = () => {
+    if (typeof onClose === "function") {
+      onClose();
+      return;
+    }
+    if (window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    navigate("/crm/deals");
+  };
 
-  const handleChange = (field, value) => {
-    setEditableData((prev) => ({ ...prev, [field]: value }));
+  const handleSaveQuotation = async () => {
+    if (!caseId) {
+      alert("Missing KPI ID. Please save deal first.");
+      return;
+    }
+
+    const payload = {
+      ...editableData,
+      kpiId: caseId,
+      systemQty: Number(editableData.systemQty || editableData.capacity || 1),
+      dealId: editableData?.dealId || data?.dealId || editableData?.createdFromDeal || data?.createdFromDeal || caseId,
+      quotationId: quoteNo,
+      quoteNo,
+      systemTotal: summary?.systemTotal || 0,
+      structureTotal: summary?.structureTotal || 0,
+      gstRate: summary?.gstRate || 0,
+      gstValue: summary?.gstValue || 0,
+      totalCost: summary?.totalCost || 0,
+      amountInWords: summary?.inWords || "",
+    };
+
+    setSavingQuotation(true);
+    try {
+      if (typeof onSaveQuotation === "function") {
+        await onSaveQuotation(payload);
+      }
+      setHasSaved(true);
+      alert("Quotation saved.");
+    } catch (err) {
+      console.error("Save quotation error:", err);
+      alert("Failed to save quotation.");
+    } finally {
+      setSavingQuotation(false);
+    }
   };
 
   // --------------------------
@@ -177,6 +286,16 @@ if (!perm.read && !perm.create) {
   // Correct, defensive, avoids undefined fields (uses Firestore doc reads)
   // --------------------------
   const createSalesOrder = async () => {
+    if (!perm.create) {
+      alert("You do not have permission to create Sales Orders.");
+      return;
+    }
+
+    const tokenAmount = Number(firstPayment || 0);
+    if (!tokenAmount || tokenAmount <= 0) {
+      alert("Please enter token payment amount before creating Sales Order.");
+      return;
+    }
 
     setCreating(true);
 
@@ -209,12 +328,39 @@ try {
     where("kpiId", "==", data?.kpiId || editableData?.kpiId || dealId)
   );
 
-  const snap = await getDocs(q);
+  const snap = await Promise.race([
+    getDocs(q),
+    new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('getDocs timeout')), 3000)
+    )
+  ]);
+  
   if (!snap.empty) {
     dealData = snap.docs[0].data();
+    console.log("🟢 Deal data fetched via SDK");
   }
-} catch (err) {
-  console.log("Deal fetch failed", err);
+} catch (sdkErr) {
+  console.warn("⚠️ SDK getDocs timeout for deal fetch, trying REST", sdkErr.message);
+  // REST fallback
+  try {
+    const stored = localStorage.getItem("kp-user");
+    const parsed = stored ? JSON.parse(stored) : null;
+    const token = parsed?.idToken;
+    if (token) {
+      const { fetchCollectionREST } = await import("../helpers/firestoreRest");
+      const allDeals = await fetchCollectionREST("deals", token);
+      const matchingDeal = allDeals.find(d => 
+        d.kpiId === (data?.kpiId || editableData?.kpiId || dealId) ||
+        d.autoId === (data?.kpiId || editableData?.kpiId || dealId)
+      );
+      if (matchingDeal) {
+        dealData = matchingDeal;
+        console.log("🟢 Deal data fetched via REST");
+      }
+    }
+  } catch (restErr) {
+    console.log("Deal fetch failed (both SDK and REST)", restErr);
+  }
 }
 
 
@@ -234,6 +380,7 @@ try {
         "";
       const phone =
         (dealData && dealData.phone) ||
+        editableData.contactNumber ||
         editableData.customerPhone ||
         editableData.phone ||
         "";
@@ -245,8 +392,9 @@ const teleSale =
   "";
 
 const consultantName =
-  dealData?.consultantName ||
-  editableData.consultantName ||
+  dealData?.consultantName ??
+  data?.consultantName ??
+  editableData?.consultantName ??
   "";
   // --- Lead Source ---
 const leadSource =
@@ -256,24 +404,43 @@ const leadSource =
 
   // --- Sales Hierarchy Fields ---
 const salesArea =
-  dealData?.sales_area ||
-  editableData.salesArea ||
+  pickScopedDisplay(
+    dealData?.sales_area || dealData?.salesArea,
+    dealData?.sales_area_label
+  ) ||
+  pickScopedDisplay(
+    editableData.sales_area || editableData.salesArea,
+    editableData.sales_area_label
+  ) ||
   "";
 
 const salesZone =
-  dealData?.sales_zone ||
-  editableData.salesZone ||
+  pickScopedDisplay(
+    dealData?.sales_zone || dealData?.salesZone,
+    dealData?.sales_zone_label
+  ) ||
+  pickScopedDisplay(
+    editableData.sales_zone || editableData.salesZone,
+    editableData.sales_zone_label
+  ) ||
   "";
 
 const state =
-  dealData?.state ||
-  editableData.state ||
+  pickScopedDisplay(dealData?.state, dealData?.state_label) ||
+  pickScopedDisplay(editableData.state, editableData.state_label) ||
   "";
 
 const zonalManager =
   dealData?.zonal_manager ||
+  dealData?.zonalManager ||
+  editableData.zonal_manager ||
   editableData.zonalManager ||
   "";
+
+const projectType =
+  dealData?.projectType ||
+  editableData?.projectType ||
+  "Residential";
 
       const address =
         (dealData && dealData.address) ||
@@ -289,50 +456,73 @@ const zonalManager =
       // 2) editableData.invoiceAmount (if user set)
       // 3) computed summary.totalCost (quotation)
       const invoiceAmount = Number(summary.totalCost || 0);
+      const firstPaymentAmount = Math.max(0, Number(firstPayment || 0));
+      const pendingPaymentAmount = Math.max(0, invoiceAmount - firstPaymentAmount);
+      const paymentPercent = invoiceAmount > 0 ? (firstPaymentAmount / invoiceAmount) * 100 : 0;
       console.log("FINAL teleSale = ", teleSale);
 console.log("FINAL consultantName = ", consultantName);
 console.log("dealData = ", dealData);
       // Prepare payload to be written to salesOrders
       const payload = {
-        kpiId: kpiIdValue,
-          lead_source: leadSource || null,
+        kpiId: data?.kpiId || editableData?.kpiId || dealId,
         name,
         phone,
-        address,
-        capacity,
+        customerName: dealData?.customer_name || editableData.customerName || name || '',
+        customerPhone: phone,
+        contactNumber: phone,
+        contact_number: phone,
+        // Canonical region hierarchy fields (used across SO/Projects/analytics)
+        sales_area: salesArea,
+        sales_zone: salesZone,
+        state,
+        zonal_manager: zonalManager,
+
+        // Keep camelCase mirrors for legacy consumers
+        salesArea,
+        salesZone,
+        zonalManager,
+
+        // Preserve original display labels when available
+        sales_area_label: dealData?.sales_area_label || editableData?.sales_area_label || salesArea || '',
+        sales_zone_label: dealData?.sales_zone_label || editableData?.sales_zone_label || salesZone || '',
+        state_label: dealData?.state_label || editableData?.state_label || state || '',
+        teleSale: dealData?.teleSale || editableData.teleSale || '',
+        assignedConsultant:
+          dealData?.assignedConsultant ||
+          data?.assignedConsultant ||
+          editableData?.assignedConsultant ||
+          "",
+        consultantName: dealData?.consultantName ?? data?.consultantName ?? editableData?.consultantName ?? '',
+        projectType,
+        paymentMode: dealData?.paymentMode || editableData?.paymentMode || "",
+        description: dealData?.description || editableData?.description || "",
+        address: (dealData && dealData.address) || editableData.location || editableData.address || '',
+        capacity: Number(dealData?.capacity ?? editableData.capacity ?? 0),
         invoiceAmount,
-       teleSale: teleSale || null,
-consultantName: consultantName || null,
-sales_area: salesArea || dealData?.sales_area || editableData?.salesArea || "",
-sales_zone: salesZone || dealData?.sales_zone || editableData?.salesZone || "",
-zonal_manager: zonalManager || dealData?.zonal_manager || editableData?.zonalManager || "",
-state: state || dealData?.state || editableData?.state || "",
-        firstPayment: Number(firstPayment || 0),
-        firstPaymentDate: firstPayment ? serverTimestamp() : null,
-        secondPayment: 0,
-        thirdPayment: 0,
-        fourthPayment: 0,
-        paymentReceived: Number(firstPayment || 0),
-        pendingPayment: invoiceAmount - Number(firstPayment || 0),
-        paymentPercentage:
-          invoiceAmount > 0
-            ? (Number(firstPayment || 0) / invoiceAmount) * 100
-            : 0,
-        convertedToProject: false,
-        sixtyPercentReceivedDate: null,
-        sourceQuotationId: data?.id || null,
-        sourceDealId: dealId || null,
-        quotationSnapshot: { ...editableData },
+        firstPayment: firstPaymentAmount,
+        paymentReceived: firstPaymentAmount,
+        pendingPayment: pendingPaymentAmount,
+        paymentPercentage: Number(paymentPercent.toFixed(2)),
+        firstPaymentDate: firstPaymentAmount > 0 ? serverTimestamp() : null,
+        tokenPayment: firstPaymentAmount,
+        leadSource: dealData?.lead_source || editableData?.lead_source || '',
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        // Add other fields as needed
       };
+      try {
+        const q = query(
+          collection(db, "deals"),
+          where("kpiId", "==", data?.kpiId || editableData?.kpiId || dealId)
+        );
 
-      // defensive: normalize undefined -> null
-      Object.keys(payload).forEach((k) => {
-        if (payload[k] === undefined) payload[k] = null;
-      });
-
-      // ---------------------------
-      // 3) Prevent duplicate KPI in salesOrders (Fix 2)
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          dealData = snap.docs[0].data();
+        }
+      } catch (err) {
+        console.log("Deal fetch failed", err);
+      }
       //    If KPI id exists and not null, query salesOrders
       // ---------------------------
       if (payload.kpiId) {
@@ -346,7 +536,7 @@ state: state || dealData?.state || editableData?.state || "",
             alert(
               "⚠️ A Sales Order with this KPI ID already exists! Preventing duplicate."
             );
-            setCreating(true);
+            setCreating(false);
             return;
           }
         } catch (err) {
@@ -355,51 +545,102 @@ state: state || dealData?.state || editableData?.state || "",
           // setCreating(false); return;
         }
       }
-
       // ---------------------------
       // 4) Write sales order to Firestore
       // ---------------------------
       payload.attachments = dealData?.attachments || [];
+      const salesOrderRef = await addDoc(collection(db, "salesOrders"), payload);
 
-      await addDoc(collection(db, "salesOrders"), payload);
+      const shouldAutoConvertToProject = Number(payload.paymentPercentage || 0) >= 60;
+      if (shouldAutoConvertToProject) {
+        try {
+          const exists = await projectExistsByKpi(payload.kpiId);
+          if (!exists) {
+            const rawState = pickScopedDisplay(payload.state, payload.state_label);
+            const rawZone = pickScopedDisplay(payload.sales_zone, payload.sales_zone_label);
+            const rawArea = pickScopedDisplay(payload.sales_area, payload.sales_area_label);
+            const sixtyDate = new Date();
+
+            await addDoc(collection(db, "projects"), {
+              kpiId: payload.kpiId,
+              name: payload.name || "",
+              phone: payload.phone || "",
+              address: payload.address || "",
+              projectType: payload.projectType || "Residential",
+              capacity: Number(payload.capacity || 0),
+              invoiceAmount: Number(payload.invoiceAmount || 0),
+              totalReceived: Number(payload.paymentReceived || 0),
+              pending: Number(payload.pendingPayment || 0),
+              paymentPercentage: Number(payload.paymentPercentage || 0),
+              salesOrderId: salesOrderRef.id,
+              sixtyPercentReceivedDate: sixtyDate,
+              sixtyPercentDate: sixtyDate,
+              state: normalizeScopeValue(rawState),
+              sales_zone: normalizeScopeValue(rawZone),
+              sales_area: normalizeScopeValue(rawArea),
+              state_label: rawState || "",
+              sales_zone_label: rawZone || "",
+              sales_area_label: rawArea || "",
+              zonal_manager: payload.zonal_manager || "",
+              teleSale: payload.teleSale || "",
+              consultantName: payload.consultantName || "",
+              assignedConsultant: payload.assignedConsultant || "",
+              createdAt: serverTimestamp(),
+            });
+
+            await updateDoc(doc(db, "salesOrders", salesOrderRef.id), {
+              status: "Converted",
+              convertedToProject: true,
+              sixtyPercentReceived: "YES",
+              sixtyPercentReceivedDate: sixtyDate,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (projectErr) {
+          console.warn("Auto project conversion failed:", projectErr?.message || projectErr);
+        }
+      }
+      // ✅ MARK DEAL AS WON (DO NOT DELETE) — safe, non-blocking
+      try {
+        const resolveDealDocId = async () => {
+          // 1) direct id exists?
+          if (dealId) {
+            try {
+              const directRef = doc(db, "deals", dealId);
+              const directSnap = await getDoc(directRef);
+              if (directSnap.exists()) return dealId;
+            } catch (_) {
+              // ignore and continue fallback lookup
+            }
+          }
+
+          // 2) lookup by KPI / autoId
+          const probe = payload.kpiId || data?.kpiId || editableData?.kpiId || dealId;
+          if (!probe) return null;
+
+          const byKpi = await getDocs(query(collection(db, "deals"), where("kpiId", "==", probe)));
+          if (!byKpi.empty) return byKpi.docs[0].id;
+
+          const byAuto = await getDocs(query(collection(db, "deals"), where("autoId", "==", probe)));
+          if (!byAuto.empty) return byAuto.docs[0].id;
+
+          return null;
+        };
+
+        const resolvedDealId = await resolveDealDocId();
+        if (resolvedDealId) {
+          await updateDoc(doc(db, "deals", resolvedDealId), {
+            stage: "Won",
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          console.warn("⚠️ Could not resolve deal document to mark Won", { dealId, kpiId: payload.kpiId });
+        }
+      } catch (stageErr) {
+        console.warn("⚠️ Sales Order created, but deal stage update skipped:", stageErr);
+      }
 
       // ---------------------------
-      // 5) If there was an originating deal, delete it (Fix 4)
-      // ---------------------------
-     // ---------------------------
-// 5) Delete original deal safely (handles all cases)
-// ---------------------------
-if (dealId || kpiIdValue) {
-  try {
-    const dealsRef = collection(db, "deals");
-
-    // 1) delete using autoId = KPI
-    if (kpiIdValue) {
-      const q1 = query(dealsRef, where("autoId", "==", kpiIdValue));
-      const snap1 = await getDocs(q1);
-
-      for (const d of snap1.docs) {
-        await deleteDoc(doc(db, "deals", d.id));
-      }
-    }
-
-    // 2) delete using dealId
-    if (dealId) {
-      const q2 = query(dealsRef, where("id", "==", dealId));
-      const snap2 = await getDocs(q2);
-
-      for (const d of snap2.docs) {
-        await deleteDoc(doc(db, "deals", d.id));
-      }
-
-      // also try direct delete (if doc id = dealId)
-      await deleteDoc(doc(db, "deals", dealId)).catch(() => {});
-    }
-  } catch (err) {
-    console.warn("Could not fully delete deal:", err);
-  }
-}
-
       alert("Sales Order created successfully.");
       setShowConvertModal(false);
 
@@ -426,50 +667,6 @@ if (dealId || kpiIdValue) {
   // --------------------------
   return (
     <div style={{ padding: "30px", fontFamily: "Poppins, sans-serif" }}>
-      {/* Top header */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <h2 style={{ color: maroon }}>Quotation Preview</h2>
-
-        <div style={{ display: "flex", gap: 10 }}>
-<div style={{ display: "flex", gap: 10 }}>
-  {perm.create && (
-    <button
-      onClick={() => setShowConvertModal(true)}
-      style={{
-        background: maroon,
-        color: "#fff",
-        border: "none",
-        padding: "8px 16px",
-        borderRadius: 6,
-        cursor: "pointer",
-      }}
-    >
-      Convert
-    </button>
-  )}
-</div>
-
-          <button
-            onClick={() => window.history.back()}
-            style={{
-              background: "#aaa",
-              color: "#fff",
-              padding: "8px 16px",
-              borderRadius: 6,
-              border: "none",
-            }}
-          >
-            Close
-          </button>
-        </div>
-      </div>
-
       <h2 style={{ fontWeight: "bold", marginTop: 20, color: maroon }}>
         Our Offer for You
       </h2>
@@ -489,6 +686,12 @@ if (dealId || kpiIdValue) {
           {editableData.customerPhone})
         </p>
         <p>
+          <b>Case ID:</b> {caseId || "-"}
+        </p>
+        <p>
+          <b>Quote No:</b> {quoteNo || "-"}
+        </p>
+        <p>
           <b>System Size:</b> {editableData.capacity} kW
         </p>
 
@@ -504,23 +707,35 @@ if (dealId || kpiIdValue) {
         <p>
           <b>Panel:</b>{" "}
           <select
-            value={editableData.panelBrand}
-            onChange={(e) => handleChange("panelBrand", e.target.value)}
-          >
-            <option>Premier Solar</option>
-            <option>Adani</option>
-            <option>Tata</option>
-            <option>Renew Power</option>
-          </select>{" "}
-          |{" "}
-          <select
-            value={editableData.panelWatt}
-            onChange={(e) => handleChange("panelWatt", e.target.value)}
-          >
-            <option>530 Wp</option>
-            <option>545 Wp</option>
-            <option>550 Wp</option>
-          </select>{" "}
+  value={editableData.panelBrand}
+  onChange={(e) => handleChange("panelBrand", e.target.value)}
+>
+  <option>Renew</option>
+  <option>Premier Energies</option>
+  <option>Tata</option>
+  <option>Adani</option>
+  <option>Waaree</option>
+  <option>RenewSys</option>
+</select>
+
+{" | "}
+
+<select
+  value={editableData.panelWatt}
+  onChange={(e) => handleChange("panelWatt", e.target.value)}
+>
+  <option>535 Wp</option>
+  <option>540 Wp</option>
+  <option>545 Wp</option>
+  <option>550 Wp</option>
+  <option>555 Wp</option>
+  <option>560 Wp</option>
+  <option>580 Wp</option>
+  <option>590 Wp</option>
+  <option>640 Wp</option>
+  <option>680 Wp</option>
+  <option>685 Wp</option>
+</select>
           |{" "}
           <select
             value={editableData.panelType}
@@ -535,22 +750,25 @@ if (dealId || kpiIdValue) {
         <p>
           <b>Inverter:</b>{" "}
           <select
-            value={editableData.inverterBrand}
-            onChange={(e) => handleChange("inverterBrand", e.target.value)}
-          >
-            <option>Polycab</option>
-            <option>Powerone</option>
-            <option>Fronius</option>
-          </select>{" "}
+  value={editableData.inverterBrand}
+  onChange={(e) => handleChange("inverterBrand", e.target.value)}
+>
+  <option>Powerone</option>
+  <option>Polycab</option>
+  <option>Sungrow</option>
+  <option>Waaree</option>
+  <option>Growatt</option>
+</select>
           |{" "}
-          <select
-            value={editableData.inverterSize}
-            onChange={(e) => handleChange("inverterSize", e.target.value)}
-          >
-            <option>5kW</option>
-            <option>10kW</option>
-            <option>20kW</option>
-          </select>
+          {" | "}
+<input
+  type="number"
+  value={editableData.inverterSize || ""}
+  onChange={(e) => handleChange("inverterSize", e.target.value)}
+  placeholder="Enter kW"
+  style={{ width: 80, padding: 4 }}
+/>
+<span style={{ marginLeft: 4 }}>kW</span>
         </p>
       </div>
 
@@ -582,30 +800,65 @@ if (dealId || kpiIdValue) {
                 }}
               />
             </td>
-            <td>{editableData.capacity}</td>
+            <td>
+              <input
+                type="number"
+                min="1"
+                value={editableData.systemQty ?? editableData.capacity ?? 1}
+                onChange={(e) => handleChange("systemQty", e.target.value)}
+                style={{
+                  width: "60px",
+                  padding: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </td>
             <td>₹{summary.systemTotal.toLocaleString()}</td>
           </tr>
 
-          <tr>
-            <td style={{ padding: 10 }}>Structure Cost</td>
-            <td>₹0</td>
-            <td>1</td>
-            <td>₹0</td>
-          </tr>
+           <tr>
+    <td style={{ padding: 10 }}>Structure Cost</td>
 
-          <tr>
-            <td colSpan="3" style={{ textAlign: "right", padding: 10 }}>
-              GST ({summary.gstRate}%)
-            </td>
-            <td>₹{summary.gstValue.toLocaleString()}</td>
-          </tr>
+    <td>
+      <input
+        type="number"
+        value={editableData.structureRate}
+        onChange={(e) => handleChange("structureRate", e.target.value)}
+        style={{ width: "100px", padding: 4 }}
+      />
+    </td>
 
-          <tr>
-            <td colSpan="3" style={{ textAlign: "right", padding: 10 }}>
-              Subsidy
-            </td>
-            <td>₹{editableData.subsidy || 0}</td>
-          </tr>
+    <td>
+      <input
+        type="number"
+        value={editableData.structureQty}
+        onChange={(e) => handleChange("structureQty", e.target.value)}
+        style={{ width: "60px", padding: 4 }}
+      />
+    </td>
+
+    <td>
+      ₹{(
+        Number(editableData.structureRate || 0) *
+        Number(editableData.structureQty || 0)
+      ).toLocaleString()}
+    </td>
+  </tr>
+
+            <tr>
+              <td colSpan="3" style={{ textAlign: "right", padding: 10 }}>
+                GST (
+                <input
+                  type="number"
+                  step="0.1"
+                  value={editableData.gst ?? 8.9}
+                  onChange={(e) => handleChange("gst", e.target.value)}
+                  style={{ width: "70px", padding: 4, margin: "0 4px" }}
+                />
+                %) on System + Structure
+              </td>
+              <td>₹{summary.gstValue.toLocaleString()}</td>
+            </tr>
 
           <tr
             style={{
@@ -614,10 +867,10 @@ if (dealId || kpiIdValue) {
               fontWeight: "bold",
             }}
           >
-            <td colSpan="3" style={{ textAlign: "right", padding: 10 }}>
+            <td colSpan="3" style={{ textAlign: "right", padding: 10, color: "#fff" }}>
               Total
             </td>
-            <td>₹{summary.totalCost.toLocaleString()}</td>
+            <td style={{ color: "#fff" }}>₹{summary.totalCost.toLocaleString()}</td>
           </tr>
 
           <tr>
@@ -628,20 +881,73 @@ if (dealId || kpiIdValue) {
         </tbody>
       </table>
 
-      {/* PDF export */}
-      <button
-        onClick={() => setShowPDF(true)}
-        style={{
-          marginTop: 20,
-          background: maroon,
-          color: "#fff",
-          padding: "10px 20px",
-          borderRadius: 6,
-          border: "none",
-        }}
-      >
-        Export as PDF
-      </button>
+      {/* Footer actions */}
+      <div style={{ marginTop: 20, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button
+          onClick={handleSaveQuotation}
+          disabled={savingQuotation}
+          style={{
+            background: "#800000",
+            color: "#fff",
+            padding: "10px 20px",
+            borderRadius: 6,
+            border: "none",
+            fontWeight: 700,
+          }}
+        >
+          {savingQuotation ? "Saving..." : "Save"}
+        </button>
+
+        {hasSaved && (
+          <button
+            onClick={() => setShowPDF(true)}
+            style={{
+              background: "#5f0000",
+              color: "#fff",
+              padding: "10px 20px",
+              borderRadius: 6,
+              border: "none",
+              fontWeight: 700,
+            }}
+          >
+            Export as PDF
+          </button>
+        )}
+
+        {perm.create && (
+          <button
+            onClick={() => {
+              setConvertMode("SO");
+              setShowConvertModal(true);
+            }}
+            style={{
+              background: "#fff",
+              color: maroon,
+              border: `1px solid ${maroon}`,
+              padding: "10px 20px",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            Convert
+          </button>
+        )}
+
+        <button
+          onClick={handleClosePreview}
+          style={{
+            background: "#f3f4f6",
+            color: maroon,
+            padding: "10px 20px",
+            borderRadius: 6,
+            border: `1px solid ${maroon}`,
+            fontWeight: 700,
+          }}
+        >
+          Close
+        </button>
+      </div>
 
     {showPDF && (
   <QuotationPDFLayout
@@ -678,30 +984,16 @@ if (dealId || kpiIdValue) {
 
             <div style={{ display: "flex", gap: 10 }}>
               <button
-                onClick={() => setConvertMode("SO")}
                 style={{
                   flex: 1,
                   padding: 10,
-                  background: convertMode === "SO" ? maroon : "#eee",
-                  color: convertMode === "SO" ? "#fff" : "#000",
+                  background: maroon,
+                  color: "#fff",
                   border: "none",
                   borderRadius: 6,
                 }}
               >
                 Create Sales Order
-              </button>
-
-              <button
-                disabled
-                style={{
-                  flex: 1,
-                  padding: 10,
-                  background: "#ccc",
-                  border: "none",
-                  borderRadius: 6,
-                }}
-              >
-                Create Invoice (Later)
               </button>
             </div>
 

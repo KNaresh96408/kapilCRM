@@ -1,0 +1,80 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // KPI attachments
+    match /attachments/{kpiId}/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    // Home attachments
+    match /attachments/home/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    // Site survey uploads
+    match /deals/{dealId}/attachments/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    // Books module: sales PDFs + e-way bills
+    match /deliveryChallans/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /invoices/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /creditNotes/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    // Books module: purchase uploads/PDFs
+    match /materialPI/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /purchaseOrders/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /grn/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /grns/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /materialReceipts/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /serviceReceipts/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /purchase/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    match /service/{path=**} {
+      allow read, write: if isAuth();
+    }
+
+    // Mail attachments (owner-only)
+    match /mail/{uid}/{path=**} {
+      allow read, write: if isAuth() && request.auth.uid == uid;
+    }
+
+    // Kapil chat attachments
+    match /chatFiles/{threadId}/{path=**} {
+      allow read, write: if isAuth();
+    }
+  }
+}

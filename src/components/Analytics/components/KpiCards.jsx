@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../../firebase/firebaseConfig";
 import { useDashboardFilters } from "../../../context/DashboardFilterContext";
 import { isDateInFilter } from "../../utils/isDateInFilter";
 import { getScopedQuery } from "../../../helpers/getScopedQuery";
+import { getDocsWithFallback } from "../../../helpers/firestoreFetch";
 
 export default function KpiCards() {
   const { filters } = useDashboardFilters();
@@ -21,12 +20,12 @@ export default function KpiCards() {
 
   const loadData = async () => {
     const q = await getScopedQuery("salesOrders");
-const snap = await getDocs(q);
+    const rows = await getDocsWithFallback(q, "salesOrders", null);
 
     let o = 0, c = 0, sv = 0, r = 0, p = 0;
 
-    snap.forEach(doc => {
-      const d = doc.data();
+    rows.forEach((row) => {
+      const d = row.data || row;
 
       if (filters.zone !== "All" && (d.sales_zone || d.salesArea) !== filters.zone)
         return;
@@ -37,17 +36,8 @@ const snap = await getDocs(q);
       c += Number(d.capacity || 0);
       sv += Number(d.invoiceAmount || 0);
 
-      if (isDateInFilter(d.firstPaymentDate, filters))
-        r += Number(d.firstPayment || 0);
-
-      if (isDateInFilter(d.secondPaymentDate, filters))
-        r += Number(d.secondPayment || 0);
-
-      if (isDateInFilter(d.thirdPaymentDate, filters))
-        r += Number(d.thirdPayment || 0);
-
-      if (isDateInFilter(d.fourthPaymentDate, filters))
-        r += Number(d.fourthPayment || 0);
+      // Revenue = Total Payment Received (sum of all payments received so far)
+      r += Number(d.paymentReceived || 0);
 
       p += Number(d.invoiceAmount || 0) - Number(d.paymentReceived || 0);
     });

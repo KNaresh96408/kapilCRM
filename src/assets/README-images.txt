@@ -1,0 +1,5 @@
+// Place this in src/assets/books.png (first image)
+// Place this in src/assets/sales.png (second image)
+// Place this in src/assets/purchase.png (third image)
+// Place this in src/assets/inventory.png (fourth image)
+// (Assume images are saved as described above)

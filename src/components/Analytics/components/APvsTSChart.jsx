@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../../firebase/firebaseConfig";
+import { getDocsWithFallback } from "../../../helpers/firestoreFetch";
 import { useDashboardFilters } from "../../../context/DashboardFilterContext";
 import { isDateInFilter } from "../../utils/isDateInFilter";
 import { getScopedQuery } from "../../../helpers/getScopedQuery";
@@ -31,13 +30,13 @@ export default function APvsTSChart() {
 
   const loadData = async () => {
     const q = await getScopedQuery("salesOrders");
-const snap = await getDocs(q);
+    const rows = await getDocsWithFallback(q, "salesOrders", null);
 
     let ap = { state: "Andhra Pradesh", orders: 0, capacity: 0, revenue: 0, salesValue: 0 };
     let ts = { state: "Telangana", orders: 0, capacity: 0, revenue: 0, salesValue: 0 };
 
-    snap.forEach(doc => {
-      const d = doc.data();
+    rows.forEach((row) => {
+      const d = row.data || row;
 
       if (filters.zone !== "All" && (d.sales_zone || "") !== filters.zone)
         return;

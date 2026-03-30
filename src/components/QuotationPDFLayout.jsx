@@ -5,14 +5,13 @@ import { jsPDF } from "jspdf";
 import Chart from "chart.js/auto";
 
 // Firebase imports (kept but NOT used for convert)
-import { db } from "../firebaseConfig";
+import { db, serverTimestamp } from "../firebaseConfig";
 import {
   doc,
   getDoc,
   addDoc,
   deleteDoc,
   collection,
-  serverTimestamp,
 } from "firebase/firestore";
 
 const A4_WIDTH = 794;
@@ -151,12 +150,26 @@ const QuotationPDFLayout = ({ quotationData = {}, onClose }) => {
     return pdf;
   };
 
+  const isIOS = () =>
+    typeof navigator !== "undefined" &&
+    /iPad|iPhone|iPod/.test(navigator.userAgent);
+
   const handlePreview = async () => {
     try {
       const pdf = await makePDF();
-      const blob = pdf.output("blob");
-      const url = URL.createObjectURL(blob);
-      setPreviewUrl(url);
+      if (isIOS()) {
+        const dataUrl = pdf.output("dataurlstring");
+        try {
+          const w = window.open(dataUrl, "_blank", "noopener,noreferrer");
+          if (!w) setPreviewUrl(dataUrl);
+        } catch (_) {
+          setPreviewUrl(dataUrl);
+        }
+      } else {
+        const blob = pdf.output("blob");
+        const url = URL.createObjectURL(blob);
+        setPreviewUrl(url);
+      }
     } catch (err) {
       console.error("Preview error:", err);
       setGenerating(false);
@@ -285,63 +298,13 @@ const QuotationPDFLayout = ({ quotationData = {}, onClose }) => {
           height: "95%",
           background: "#fff",
           borderRadius: 8,
-          overflow: "auto",
+          overflow: "hidden",
           padding: 12,
+          display: "flex",
+          flexDirection: "column",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            marginBottom: 10,
-            gap: 8,
-          }}
-        >
-          <button
-            onClick={onClose}
-            style={{
-              border: "1px solid #b33f3f",
-              background: "transparent",
-              color: "#b33f3f",
-              padding: "6px 10px",
-              borderRadius: 6,
-            }}
-          >
-            ✕ Close
-          </button>
-
-          <div style={{ flex: 1 }} />
-
-          <button
-            disabled={generating || loadingImages}
-            onClick={handlePreview}
-            style={{
-              background: "#2c9ad1",
-              color: "#fff",
-              border: "none",
-              padding: "8px 12px",
-              borderRadius: 6,
-            }}
-          >
-            {generating ? "Generating..." : "Generate Preview"}
-          </button>
-
-          <button
-            disabled={!previewUrl || generating}
-            onClick={handleDownload}
-            style={{
-              background: "#b33f3f",
-              color: "#fff",
-              border: "none",
-              padding: "8px 12px",
-              borderRadius: 6,
-            }}
-          >
-            Download PDF
-          </button>
-        </div>
-
-        <div style={{ display: "flex", gap: 12, height: "90%" }}>
+        <div style={{ display: "flex", gap: 12, flex: 1, minHeight: 0, overflow: "hidden" }}>
           {/* LEFT */}
           <div
             style={{
@@ -516,6 +479,8 @@ const QuotationPDFLayout = ({ quotationData = {}, onClose }) => {
               flex: 1,
               border: "1px solid #eee",
               borderRadius: 6,
+              minHeight: 0,
+              overflow: "hidden",
             }}
           >
             {previewUrl ? (
@@ -551,6 +516,63 @@ const QuotationPDFLayout = ({ quotationData = {}, onClose }) => {
               </div>
             )}
           </div>
+        </div>
+
+        <div
+          style={{
+            marginTop: 10,
+            borderTop: "1px solid #e5e7eb",
+            paddingTop: 10,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            justifyContent: "flex-end",
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            onClick={onClose}
+            style={{
+              border: "1px solid #800000",
+              background: "#fff",
+              color: "#800000",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 700,
+            }}
+          >
+            Close
+          </button>
+
+          <button
+            disabled={generating || loadingImages}
+            onClick={handlePreview}
+            style={{
+              background: "#800000",
+              color: "#fff",
+              border: "none",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 700,
+            }}
+          >
+            {generating ? "Generating..." : "Generate Preview"}
+          </button>
+
+          <button
+            disabled={!previewUrl || generating}
+            onClick={handleDownload}
+            style={{
+              background: "#5f0000",
+              color: "#fff",
+              border: "none",
+              padding: "8px 12px",
+              borderRadius: 8,
+              fontWeight: 700,
+            }}
+          >
+            Download PDF
+          </button>
         </div>
       </div>
     </div>

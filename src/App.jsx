@@ -1,7 +1,13 @@
-import { App as CapacitorApp } from "@capacitor/app";
-import React, { useState, useEffect } from "react";
+// Books (ERP Sales)
+import BooksLayout from "./modules/books/BooksLayout";
+import CustomerDetails from "./modules/books/sales/CustomerDetails";
+import DeliveryChallans from "./modules/books/sales/DeliveryChallans";
+import Invoices from "./modules/books/sales/Invoices";
+import CreditNotes from "./modules/books/sales/CreditNotes";
+import PaymentReceivables from "./modules/books/sales/PaymentReceivables";
+import React, { useEffect } from "react";
 import {
-  BrowserRouter as Router,
+  HashRouter as Router,
   Routes,
   Route,
   useLocation,
@@ -11,6 +17,7 @@ import {
 } from "react-router-dom";
 
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "./context/AuthContext";
 
 // 🔐 LOGIN PROTECTION
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -54,6 +61,7 @@ import TopNavbar from "./components/TopNavbar";
 import AttendancePage from "./components/AttendancePage";
 
 // Dynamic Modules
+import BooksHome from './modules/books/BooksHome'; // Importing BooksHome for routing
 import DynamicListWrapper from "./components/Dynamic/Wrappers/DynamicListWrapper";
 import DynamicCreateWrapper from "./components/Dynamic/Wrappers/DynamicCreateWrapper";
 import DynamicDetailWrapper from "./components/Dynamic/Wrappers/DynamicDetailWrapper";
@@ -65,6 +73,14 @@ import SurveyStart from "./pages/siteSurvey/SurveyStart";
 import SurveyForm from "./pages/siteSurvey/SurveyForm";
 import SurveySubmitted from "./pages/siteSurvey/SurveySubmitted";
 import SurveyReportView from "./pages/siteSurvey/SurveyReportView";
+import OrganizationPage from "./pages/Organization/OrganizationPage";
+import NotificationsPage from "./pages/NotificationsPage";
+import MailSetupPage from "./pages/MailSetupPage";
+import MeetingsPage from "./pages/MeetingsPage";
+import WebNotificationListener from "./components/WebNotificationListener";
+import AttachmentsPage from "./modules/attachments/pages/AttachmentsPage";
+import { BRAND_MAROON_PURPLE_GRADIENT } from "./styles/brandTheme";
+import KapilChatWidget from "./components/KapilChatWidget";
 
 
 // ------------------------------------------------------------------
@@ -141,22 +157,96 @@ const ModulePermissionWrapper = () => {
   return <ModulePermission moduleName={moduleName} />;
 };
 
+const normalizeRole = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/_+/g, "_");
+
+const isServiceEngineerRole = (role) => {
+  const r = normalizeRole(role);
+  return r === "service_engineer" || r === "service_enginner";
+};
+
+const SERVICE_ENGINEER_ALLOWED_MODULES = new Set([
+  "attendance",
+  "notifications",
+  "mail",
+  "meetings",
+]);
+
+function RoleModuleGate({ moduleKey = "", children }) {
+  const { user, roleData } = useAuth();
+
+  let sessionRole = "";
+  try {
+    const stored = localStorage.getItem("kp-user");
+    const parsed = stored ? JSON.parse(stored) : null;
+    sessionRole = parsed?.role || parsed?.Role || parsed?.profile?.role || parsed?.profile?.Role || "";
+  } catch {
+    sessionRole = "";
+  }
+
+  const role =
+    user?.role ||
+    user?.Role ||
+    roleData?.role ||
+    roleData?.Role ||
+    sessionRole ||
+    "";
+
+  if (!isServiceEngineerRole(role)) return <>{children}</>;
+  if (SERVICE_ENGINEER_ALLOWED_MODULES.has(String(moduleKey || "").trim().toLowerCase())) {
+    return <>{children}</>;
+  }
+
+  return <Navigate to="/apps" replace />;
+}
+
 
 // ------------------------------------------------------
 // CRM Layout
 // ------------------------------------------------------
 function CRMLayout() {
   const location = useLocation();
-  const hideNavbar = location.pathname === "/crm/home";
+  const hideNavbar =
+    location.pathname.startsWith("/crm/attachments") ||
+    location.pathname.startsWith("/crm/meetings");
+  const isAnalyticsRoute = location.pathname.startsWith("/crm/analytics");
+  const normalizedCrmPath = String(location.pathname || "").replace(/\/+$/, "");
+  const showHomeScrollbar = normalizedCrmPath === "/crm/home";
 
   return (
-    <>
+    <div
+      style={{
+        height: "100dvh",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
       {!hideNavbar && <TopNavbar />}
 
-      <div className="main-scroll">
+      <div
+        className={`main-scroll${showHomeScrollbar ? " home-vertical-scroll" : ""}`}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: showHomeScrollbar ? "scroll" : "auto",
+          overflowX: "hidden",
+          WebkitOverflowScrolling: "touch",
+          touchAction: "pan-y",
+          paddingTop: 0,
+          background: isAnalyticsRoute ? "#ffffff" : BRAND_MAROON_PURPLE_GRADIENT,
+          paddingLeft: 10,
+          paddingRight: 10,
+          paddingBottom: 12,
+        }}
+      >
         <Outlet />
       </div>
-    </>
+    </div>
   );
 }
 
@@ -167,32 +257,61 @@ function CRMLayout() {
 // ------------------------------------------------------
 function Layout() {
   const location = useLocation();
-
+  console.log("🧭 Layout render | pathname:", location.pathname);
+console.log("🌍 ROUTER LOCATION:", window.location.href);
   const hideNavbar =
   location.pathname === "/" ||
   location.pathname === "/apps" ||
+  location.pathname === "/notifications" ||
+  location.pathname.startsWith("/mail") ||
   location.pathname === "/forgot-password" ||
   location.pathname === "/verify-otp" ||
   location.pathname.startsWith("/reset-password") ||
   location.pathname.startsWith("/attendance") ||
+  location.pathname.startsWith("/organization") ||
   location.pathname.startsWith("/site-survey") ||
   location.pathname.startsWith("/survey-report");
 
-
-
-  const [open, setOpen] = useState(false);
-
   return (
     <>
-      {!hideNavbar && !location.pathname.startsWith("/crm") && <TopNavbar />}
+      <WebNotificationListener />
+      {!hideNavbar && !location.pathname.startsWith("/crm") && !location.pathname.startsWith("/books") && <TopNavbar />}
 
       <Routes>
+        {/* BOOKS ERP SALES ROUTES */}
+        {/* Books module uses its own layout, no CRM navbar */}
+        <Route
+          path="/books/*"
+          element={
+            <RoleModuleGate moduleKey="books">
+              <BooksLayout />
+            </RoleModuleGate>
+          }
+        >
+          <Route index element={<BooksHome />} />
+          {/* Sales subroutes */}
+          <Route path="sales/customer-details" element={<CustomerDetails />} />
+          <Route path="sales/delivery-challans" element={<DeliveryChallans />} />
+          <Route path="sales/invoices" element={<Invoices />} />
+          <Route path="sales/credit-notes" element={<CreditNotes />} />
+          <Route path="sales/payment-receivables" element={<PaymentReceivables />} />
+          {/* Default sales route */}
+          <Route path="sales" element={<Navigate to="sales/customer-details" replace />} />
+          {/* TODO: Add purchase and inventory subroutes here */}
+        </Route>
         {/* Public Routes */}
         <Route path="/" element={<Login />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/verify-otp" element={<VerifyOTP />} />
         <Route path="/reset-password-final" element={<ResetPassword />} />
-        <Route path="/apps" element={<AppSelect />} />
+        <Route
+  path="/apps"
+  element={
+    <ProtectedRoute>
+      <AppSelect />
+    </ProtectedRoute>
+  }
+/>
 
         {/* 🔐 PROTECTED ROUTES BELOW */}
 
@@ -201,7 +320,9 @@ function Layout() {
           path="/home"
           element={
             <ProtectedRoute>
-              <Home />
+              <RoleModuleGate moduleKey="crm">
+                <Home />
+              </RoleModuleGate>
             </ProtectedRoute>
           }
         />
@@ -211,7 +332,9 @@ function Layout() {
           path="/settings"
           element={
             <ProtectedRoute>
-              <SettingsPage />
+              <RoleModuleGate moduleKey="settings">
+                <SettingsPage />
+              </RoleModuleGate>
             </ProtectedRoute>
           }
         />
@@ -220,7 +343,9 @@ function Layout() {
           path="/settings/create-module"
           element={
             <ProtectedRoute>
-              <CreateModule />
+              <RoleModuleGate moduleKey="settings">
+                <CreateModule />
+              </RoleModuleGate>
             </ProtectedRoute>
           }
         />
@@ -229,7 +354,9 @@ function Layout() {
           path="/settings/module/:moduleName"
           element={
             <ProtectedRoute>
-              <EditModule />
+              <RoleModuleGate moduleKey="settings">
+                <EditModule />
+              </RoleModuleGate>
             </ProtectedRoute>
           }
         />
@@ -238,7 +365,9 @@ function Layout() {
           path="/settings/module/:moduleName/permissions"
           element={
             <ProtectedRoute>
-              <ModulePermissionWrapper />
+              <RoleModuleGate moduleKey="settings">
+                <ModulePermissionWrapper />
+              </RoleModuleGate>
             </ProtectedRoute>
           }
         />
@@ -247,7 +376,9 @@ function Layout() {
           path="/settings/edit-layout"
           element={
             <ProtectedRoute>
-              <EditLayoutPage />
+              <RoleModuleGate moduleKey="settings">
+                <EditLayoutPage />
+              </RoleModuleGate>
             </ProtectedRoute>
           }
         />
@@ -261,7 +392,14 @@ function Layout() {
             </ProtectedRoute>
           }
         >
-          <Route path="home" element={<Home />} />
+          <Route
+            path="home"
+            element={
+              <RoleModuleGate moduleKey="crm">
+                <Home />
+              </RoleModuleGate>
+            }
+          />
 
           <Route
             path="leads"
@@ -298,55 +436,162 @@ function Layout() {
               </PermissionGate>
             }
           />
+
+          <Route
+            path="attachments"
+            element={
+              <PermissionGate moduleName="attachments">
+                <AttachmentsPage />
+              </PermissionGate>
+            }
+          />
+
+          <Route
+            path="meetings"
+            element={
+              <RoleModuleGate moduleKey="meetings">
+                <MeetingsPage />
+              </RoleModuleGate>
+            }
+          />
           {/*  ANALYTICS ROOT PAGE  */}
-<Route path="analytics" element={<AnalyticsHome />} />
+<Route
+  path="analytics"
+  element={
+    <RoleModuleGate moduleKey="analytics">
+      <AnalyticsHome />
+    </RoleModuleGate>
+  }
+/>
 
 {/*  INDIVIDUAL DASHBOARDS  */}
-<Route path="analytics/sales" element={<SalesDashboard />} />
+<Route
+  path="analytics/sales"
+  element={
+    <RoleModuleGate moduleKey="analytics">
+      <SalesDashboard />
+    </RoleModuleGate>
+  }
+/>
 <Route
   path="analytics/performance"
   element={
-    <DashboardFilterProvider>
-      <PerformanceDashboard />
-    </DashboardFilterProvider>
+    <RoleModuleGate moduleKey="analytics">
+      <DashboardFilterProvider>
+        <PerformanceDashboard />
+      </DashboardFilterProvider>
+    </RoleModuleGate>
   }
 />
 <Route
   path="analytics/payment-tracker"
   element={
-    <DashboardFilterProvider>
-      <PaymentTracker />
-    </DashboardFilterProvider>
+    <RoleModuleGate moduleKey="analytics">
+      <DashboardFilterProvider>
+        <PaymentTracker />
+      </DashboardFilterProvider>
+    </RoleModuleGate>
   }
 />
 
 <Route
   path="analytics/operations"
   element={
-    <ProtectedRoute>
+    <RoleModuleGate moduleKey="analytics">
       <OperationsAnalytics />
-    </ProtectedRoute>
+    </RoleModuleGate>
   }
 />
 
-          <Route path="quotationsDashboard" element={<QuotationsDashboard />} />
+          <Route
+            path="quotationsDashboard"
+            element={
+              <RoleModuleGate moduleKey="crm">
+                <QuotationsDashboard />
+              </RoleModuleGate>
+            }
+          />
 
           {/* Dynamic modules */}
-          <Route path="modules/:module/list" element={<DynamicListWrapper />} />
-          <Route path="modules/:module/create" element={<DynamicCreateWrapper />} />
-          <Route path="modules/:module/view/:id" element={<DynamicDetailWrapper />} />
-          <Route path="modules/:module/edit/:id" element={<DynamicEditWrapper />} />
+          <Route
+            path="modules/:module/list"
+            element={
+              <RoleModuleGate moduleKey="crm">
+                <DynamicListWrapper />
+              </RoleModuleGate>
+            }
+          />
+          <Route
+            path="modules/:module/create"
+            element={
+              <RoleModuleGate moduleKey="crm">
+                <DynamicCreateWrapper />
+              </RoleModuleGate>
+            }
+          />
+          <Route
+            path="modules/:module/view/:id"
+            element={
+              <RoleModuleGate moduleKey="crm">
+                <DynamicDetailWrapper />
+              </RoleModuleGate>
+            }
+          />
+          <Route
+            path="modules/:module/edit/:id"
+            element={
+              <RoleModuleGate moduleKey="crm">
+                <DynamicEditWrapper />
+              </RoleModuleGate>
+            }
+          />
         </Route>
 
         {/* Attendance */}
         <Route
-          path="/attendance"
+  path="/attendance"
+  element={
+    <ProtectedRoute>
+      <RoleModuleGate moduleKey="attendance">
+        <Attendance />
+      </RoleModuleGate>
+    </ProtectedRoute>
+  }
+/>
+
+        <Route
+          path="/organization/*"
           element={
             <ProtectedRoute>
-              <Attendance />
+              <RoleModuleGate moduleKey="organization">
+                <OrganizationPage />
+              </RoleModuleGate>
             </ProtectedRoute>
           }
         />
+
+        <Route
+          path="/notifications"
+          element={
+            <ProtectedRoute>
+              <RoleModuleGate moduleKey="notifications">
+                <NotificationsPage />
+              </RoleModuleGate>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/mail"
+          element={
+            <ProtectedRoute>
+              <RoleModuleGate moduleKey="mail">
+                <MailSetupPage />
+              </RoleModuleGate>
+            </ProtectedRoute>
+          }
+        />
+
         <Route path="/site-survey/start/:dealId/:token" element={<SurveyStart />} />
 <Route path="/site-survey/form/:dealId/:token" element={<SurveyForm />} />
 <Route path="/site-survey/completed" element={<SurveySubmitted />} />
@@ -355,6 +600,8 @@ function Layout() {
 
         <Route path="*" element={<div>404 Not Found</div>} />
       </Routes>
+
+      <KapilChatWidget />
     </>
   );
 }
@@ -379,6 +626,21 @@ function ResetListener() {
   return null;
 }
 
+function LegacyDeepLinkRedirector() {
+  useEffect(() => {
+    const { origin, pathname, search, hash } = window.location;
+    if (hash && hash.startsWith("#/")) return;
+
+    const deepPrefixes = ["/site-survey/", "/survey-report/"];
+    if (!deepPrefixes.some((prefix) => pathname.startsWith(prefix))) return;
+
+    const next = `${origin}/#${pathname}${search || ""}`;
+    window.location.replace(next);
+  }, []);
+
+  return null;
+}
+
 
 // ------------------------------------------------------
 // MAIN APP EXPORT
@@ -386,7 +648,7 @@ function ResetListener() {
 export default function App() {
   return (
     <Router>
-      <BackHandlerWrapper />
+      <LegacyDeepLinkRedirector />
       <ResetListener />
       <Layout />
     </Router>

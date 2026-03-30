@@ -1,8 +1,16 @@
 // src/components/ApprovedLeavePanel.jsx
 
 import React, { useEffect, useState } from "react";
-import { collection, query, where, getDocs, orderBy } from "firebase/firestore";
-import { db } from "../firebase/firebaseConfig";
+import { collection, query, where, getDocs } from "firebase/firestore";
+import { db } from "../firebaseConfig";
+import { fetchCollectionREST } from "../helpers/firestoreRest";
+
+const REQUEST_TYPE_LABEL = {
+  leave: "Leave",
+  comp_off: "Comp-Off",
+  early_checkin: "Early Check-in",
+  early_checkout: "Early Check-out",
+};
 
 export default function ApprovedLeavePanel() {
   const [leaves, setLeaves] = useState([]);
@@ -12,21 +20,57 @@ export default function ApprovedLeavePanel() {
   useEffect(() => {
     const load = async () => {
       try {
-        const q = query(
-  collection(db, "leaveRequests"),
-  where("final_status", "==", "approved")
-);
+        const TIMEOUT_MS = 3000;
+        
+        // Try Firestore SDK with timeout
+        try {
+          const q = query(
+            collection(db, "leaveRequests"),
+            where("final_status", "==", "approved")
+          );
 
-        const snap = await getDocs(q);
-        const rows = [];
+          const sdkPromise = getDocs(q);
+          const snap = await Promise.race([
+            sdkPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('SDK timeout')), TIMEOUT_MS)),
+          ]);
 
-        snap.forEach(doc => {
-          rows.push({ id: doc.id, ...doc.data() });
-        });
+          const rows = [];
+          snap.forEach(doc => {
+            rows.push({ id: doc.id, ...doc.data() });
+          });
 
-        setLeaves(rows);
+          setLeaves(rows);
+          return;
+        } catch (sdkErr) {
+          console.warn('🟡 ApprovedLeavePanel SDK failed, trying REST fallback', sdkErr?.message);
+        }
+
+        // REST fallback
+        try {
+          const stored = localStorage.getItem('kp-user');
+          const parsed = stored ? JSON.parse(stored) : null;
+          const token = parsed?.idToken;
+
+          if (token) {
+            const data = await fetchCollectionREST('leaveRequests', token);
+            const filtered = data.filter(
+              (d) =>
+                String(d.final_status || "").toLowerCase() === "approved" ||
+                String(d.status || "").toLowerCase() === "approved"
+            );
+            setLeaves(filtered);
+            return;
+          }
+        } catch (restErr) {
+          console.warn('⚠️ ApprovedLeavePanel REST fallback failed', restErr?.message);
+        }
+
+        // Both failed, show empty
+        setLeaves([]);
       } catch (e) {
         console.error("ApprovedLeavePanel error:", e);
+        setLeaves([]);
       }
     };
 
@@ -89,7 +133,7 @@ export default function ApprovedLeavePanel() {
           <b>{l.userEmail}</b>
 
           <div style={{ fontSize: 13 }}>
-            {l.type?.toUpperCase()} | {l.from} → {l.to}
+            {(REQUEST_TYPE_LABEL[l.type] || l.type || "Request")} | {l.from} → {l.to}
           </div>
           <div style={{ fontSize: 12, marginTop: 4 }}>
   ✔ Approved by{" "}

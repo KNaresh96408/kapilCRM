@@ -1,0 +1,70 @@
+/kapil-power-crm/kapil-power-crm/src/styles/attachments.css
+
+.attachments-container {
+    padding: 20px;
+    background-color: #f9f9f9;
+}
+
+.kpi-folder-list {
+    margin-bottom: 20px;
+}
+
+.kpi-folder-item {
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.kpi-folder-item:hover {
+    background-color: #e0e0e0;
+}
+
+.attachment-list {
+    list-style-type: none;
+    padding: 0;
+}
+
+.attachment-item {
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.attachment-item:hover {
+    background-color: #f1f1f1;
+}
+
+.upload-button {
+    background-color: #4CAF50;
+    color: white;
+    padding: 10px 15px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.upload-button:hover {
+    background-color: #45a049;
+}
+
+.breadcrumbs {
+    margin-bottom: 20px;
+    font-size: 14px;
+}
+
+.breadcrumbs a {
+    text-decoration: none;
+    color: #007bff;
+}
+
+.breadcrumbs a:hover {
+    text-decoration: underline;
+}

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { db } from "../../firebase/firebaseConfig";
+import { auth, db } from "../../firebase/firebaseConfig";
 import { useDashboardFilters } from "../../context/DashboardFilterContext";
 import { isDateInFilter } from "../utils/isDateInFilter";
 import PaymentTrackerFilterBar from "./PaymentTrackerFilterBar";
@@ -15,7 +15,6 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { getAuth } from "firebase/auth";
 import {
   collection,
   getDocs,
@@ -26,6 +25,7 @@ import {
   where
 } from "firebase/firestore";
 import { getScopedQuery } from "../../helpers/getScopedQuery";
+import { getDocsWithFallback } from "../../helpers/firestoreFetch";
 
 
 
@@ -33,6 +33,33 @@ import { getScopedQuery } from "../../helpers/getScopedQuery";
 export default function PaymentTracker() {
   const [userRole, setUserRole] = useState("user");
   const user = JSON.parse(localStorage.getItem("kp-user") || "{}");
+
+  const normalizeRole = (raw) => {
+    const base = (raw || "").toString().trim().toLowerCase();
+    if (!base) return "";
+    const underscored = base.replace(/[\s-]+/g, "_").replace(/_+/g, "_");
+    const compact = underscored.replace(/_/g, "");
+    const aliasByCompact = {
+      saleshead: "sales_head",
+      hroperationsmanager: "agm",
+      hr_operations_manager: "agm",
+      agm: "agm",
+      financemanager: "dgm",
+      finance_manager: "dgm",
+      dgm: "dgm",
+      salesheadmanager: "sales_head",
+    };
+    return aliasByCompact[compact] || underscored;
+  };
+
+  const toDateSafe = (value) => {
+    if (!value) return null;
+    if (value?.toDate) return value.toDate();
+    if (value?.seconds) return new Date(value.seconds * 1000);
+    if (value instanceof Date) return value;
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  };
 
   const { filters } = useDashboardFilters();
 
@@ -50,7 +77,7 @@ export default function PaymentTracker() {
 
 const fetchUserRole = async () => {
   try {
-    const auth = getAuth();
+
     const email = auth.currentUser?.email;
     if (!email) return;
 
@@ -63,7 +90,7 @@ const fetchUserRole = async () => {
 
     if (!snap.empty) {
       const data = snap.docs[0].data();
-      setUserRole((data.role || data.designation || "user").toLowerCase());
+      setUserRole(normalizeRole(data.role || data.designation || "user"));
     }
   } catch (e) {
     console.log("Role Fetch Error", e);
@@ -116,11 +143,11 @@ const fetchUserRole = async () => {
     setLoading(true);
 
     const q = await getScopedQuery("salesOrders");
-        const snap = await getDocs(q);
+    const rows = await getDocsWithFallback(q, "salesOrders", null);
     let list = [];
 
-    snap.forEach((d) => {
-      const data = d.data();
+    rows.forEach((row) => {
+      const data = row.data || row;
 
       // Apply Filter Bar (Zone + Dates + 60%)
       if (filters.zone !== "All" && (data.sales_zone || "") !== filters.zone)
@@ -138,14 +165,12 @@ if (
   return;
 
 
-      let createdDate = data.createdAt?.toDate
-        ? data.createdAt.toDate()
-        : new Date(data.createdAt);
+      let createdDate = toDateSafe(data.createdAt) || new Date();
 
       let delayDays = 0;
 
       if (sixtyPercentReceived === "YES" && data.sixtyPercentReceivedDate) {
-        const receivedDate = data.sixtyPercentReceivedDate.toDate();
+        const receivedDate = toDateSafe(data.sixtyPercentReceivedDate) || createdDate;
         delayDays = Math.max(
           0,
           Math.round((receivedDate - createdDate) / (1000 * 60 * 60 * 24))
@@ -160,7 +185,7 @@ if (
 
       list.push({
         ...data,
-        id: d.id,
+        id: row.id || data.id,
         sixtyPercentReceived,
         sixtyPercentDelayDays: delayDays,
       });
@@ -289,7 +314,7 @@ if (
       <PaymentGauge received={totalPaymentReceived} target={targetAmount} />
 
       {/* TARGET INPUT */}
-{["admin", "sales_head"].includes(userRole) && (
+{["admin", "sales_head", "saleshead", "agm", "director", "dgm"].includes(userRole) && (
   <div style={{ textAlign: "center", marginBottom: 25 }}>
     <input
       type="number"

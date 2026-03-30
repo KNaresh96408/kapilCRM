@@ -1,18 +1,19 @@
 // src/lib/attendanceHelpers.js
 
 import { db } from "../firebaseConfig";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { query, where } from "firebase/firestore";
+import { fetchCollectionREST } from "../helpers/firestoreRest";
 
 // --------------------------------------------
 // FETCH ALL ATTENDANCE RECORDS FOR RANGE
 // --------------------------------------------
 export async function fetchAttendanceForMonth(startDate, endDate) {
-  const snap = await getDocs(collection(db, "attendance"));
+  const rows = await import('../helpers/firestoreFetch').then((m) => m.fetchCollectionDocs('attendance'));
 
   const map = new Map();
 
-  snap.docs.forEach((docSnap) => {
-    const data = docSnap.data();
+  rows.forEach((docSnap) => {
+    const data = docSnap || {};
     const uid = data.userId;
 
     if (!map.has(uid)) map.set(uid, {});
@@ -27,13 +28,22 @@ export async function fetchAttendanceForMonth(startDate, endDate) {
 // FETCH HOLIDAYS IN RANGE
 // --------------------------------------------
 export async function fetchHolidaysInRange(start, end) {
-  const holSnap = await getDocs(collection(db, "holidays"));
+  const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+  const token = stored.idToken;
 
+  if (!token) {
+    console.warn("No idToken for holidays fetch");
+    return new Set();
+  }
+
+  const rows = await fetchCollectionREST("holidays", token);
   const holSet = new Set();
 
-  holSnap.docs.forEach((d) => {
-    const date = d.id;
-    if (date >= start && date <= end) holSet.add(date);
+  (rows || []).forEach((d) => {
+    const date = d.date || d.id;
+    if (date >= start && date <= end) {
+      holSet.add(date);
+    }
   });
 
   return holSet;

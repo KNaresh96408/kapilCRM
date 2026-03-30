@@ -13,20 +13,19 @@ async function removeDuplicateDeals() {
   console.log("🚀 Starting duplicate cleanup in 'deals' collection...");
 
   try {
-    const snapshot = await getDocs(collection(db, "deals"));
+    const rows = await import('./helpers/firestoreFetch').then((m) => m.fetchCollectionDocs('deals'));
     const seen = new Set();
     let deletedCount = 0;
 
-    for (const dealDoc of snapshot.docs) {
-      const data = dealDoc.data();
+    for (const r of rows) {
+      const data = r || {};
       const id = data.autoId;
 
-      if (!id) continue; // skip documents without KPI ID
+      if (!id) continue;
 
       if (seen.has(id)) {
-        // Duplicate detected — delete it
-        await deleteDoc(doc(db, "deals", dealDoc.id));
-        console.log(`🗑 Deleted duplicate deal: ${id} (Doc ID: ${dealDoc.id})`);
+        await deleteDoc(doc(db, "deals", r.id));
+        console.log(`🗑 Deleted duplicate deal: ${id} (Doc ID: ${r.id})`);
         deletedCount++;
       } else {
         seen.add(id);

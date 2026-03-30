@@ -9,10 +9,10 @@ import {
   updateDoc,
   collection,
   getDocs,
-  serverTimestamp,
   arrayUnion,
 } from "firebase/firestore";
-import { db } from "../../firebaseConfig";
+import { db, serverTimestamp } from "../../firebaseConfig";
+import { fetchCollectionREST } from "../../helpers/firestoreRest";
 
 // ------------------------------------------------------------
 // Helpers
@@ -171,20 +171,20 @@ export const checkOut = async ({ uid, dateStr, clientCheckOutDate }) => {
   return { id, totalMinutes, status };
 };
 
-// ------------------------------------------------------------
-// ADMIN — Load attendance range
+// ADMIN — Load attendance range (iOS SAFE)
 // ------------------------------------------------------------
 export const fetchAttendanceRange = async (from, to) => {
-  const snap = await getDocs(collection(db, "attendance"));
-  const list = [];
+  const stored = JSON.parse(localStorage.getItem("kp-user") || "{}");
+  const token = stored.idToken;
 
-  snap.forEach((docSnap) => {
-    const d = docSnap.data();
-    if (!d.date) return;
-    if (d.date >= from && d.date <= to) {
-      list.push({ id: docSnap.id, ...d });
-    }
-  });
+  if (!token) {
+    console.warn("No idToken found, cannot load attendance");
+    return [];
+  }
 
-  return list;
+  const rows = await fetchCollectionREST("attendance", token);
+
+  return (rows || []).filter(
+    (d) => d.date && d.date >= from && d.date <= to
+  );
 };

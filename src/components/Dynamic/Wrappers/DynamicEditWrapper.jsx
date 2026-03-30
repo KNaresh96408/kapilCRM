@@ -21,16 +21,16 @@ export default function DynamicEditWrapper() {
     try {
       setLoading(true);
 
-      // 1. Load module config
-      const snap = await getDocs(collection(db, "crm_modules"));
+      // 1. Load module config (resilient)
+      const rows = await import('../../../helpers/firestoreFetch').then((m) => m.fetchCollectionDocs('crm_modules'));
       let found = null;
-
-      snap.forEach((d) => {
-        const data = d.data();
-        if (data.apiName === module) {
-          found = { ...data, moduleId: d.id };
+      for (const r of rows) {
+        const api = r.apiName || r.moduleApiName || r.api || r.moduleApi || r.id || r.moduleName;
+        if (String(api) === String(module)) {
+          found = { ...r, moduleId: r.id };
+          break;
         }
-      });
+      }
 
       if (!found) {
         console.error("Module not found:", module);

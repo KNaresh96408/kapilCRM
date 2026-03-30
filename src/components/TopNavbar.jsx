@@ -1,41 +1,53 @@
 // src/components/TopNavbar.jsx
 import React, { useState, useEffect } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
-import { db } from "../firebaseConfig";
-
 import UniversalSearch from "./Universal/UniversalSearch";
 import { FiSettings } from "react-icons/fi";
+import { useAuth } from "../context/AuthContext";
+import { BRAND_MAROON_PURPLE_GRADIENT } from "../styles/brandTheme";
+import kapilLogo from "../kapil-logo.png";
 
 const TopNavbar = () => {
   const [userData, setUserData] = useState(null);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const { user: ctxUser } = useAuth();
 
   
-  const isMobile = window.innerWidth < 768;
+  const isMobile = window.matchMedia("(max-width: 768px)").matches;
 
-  useEffect(() => {
-    const auth = getAuth();
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (!user) return setUserData(null);
-
-      try {
-        const ref = doc(db, "Users", user.uid);
-        const snap = await getDoc(ref);
-
-        if (snap.exists()) setUserData(snap.data());
-        else setUserData({ email: user.email, role: "User", name: "" });
-      } catch {
-        setUserData({ email: user.email, role: "User", name: "" });
-      }
-    });
-
-    return () => unsub();
-  }, []);
+useEffect(() => {
+  if (ctxUser) {
+    setUserData(ctxUser);
+    return;
+  }
+  try {
+    const stored = localStorage.getItem("kp-user");
+    if (stored) {
+      const user = JSON.parse(stored);
+      setUserData(user);
+    } else {
+      setUserData(null);
+    }
+  } catch (e) {
+    console.error("Failed to load user from localStorage", e);
+    setUserData(null);
+  }
+}, [ctxUser]);
   const analyticsRef = React.useRef(null);
+
+  const normalizedRole = String(
+    userData?.role || userData?.Role || ctxUser?.role || ctxUser?.Role || ""
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  const canSeeSettings =
+    normalizedRole === "admin" ||
+    normalizedRole === "administrator" ||
+    normalizedRole === "super_admin" ||
+    normalizedRole === "superadmin";
 
 useEffect(() => {
   function handleClickOutside(e) {
@@ -62,52 +74,138 @@ useEffect(() => {
   const linkStyle = {
     color: "white",
     textDecoration: "none",
-    fontWeight: "600",
-    fontSize: "16px",
-    padding: "6px 10px",
+    fontWeight: 600,
+    fontSize: isMobile ? "14px" : "15px",
+    padding: isMobile ? "8px 10px 9px" : "9px 12px 10px",
+    lineHeight: 1.1,
+    borderBottom: "4px solid transparent",
+    borderBottomLeftRadius: "14px",
+    borderBottomRightRadius: "14px",
+    borderLeft: "1px solid transparent",
+    borderRight: "1px solid transparent",
+    display: "inline-flex",
+    alignItems: "center",
   };
 
-  const activeStyle = { fontWeight: "700", color: "white" };
+  const activeStyle = {
+    ...linkStyle,
+    fontWeight: 700,
+    color: "white",
+    borderBottom: "4px solid #fff",
+    borderLeft: "1px solid rgba(255,255,255,0.55)",
+    borderRight: "1px solid rgba(255,255,255,0.55)",
+    background: "rgba(255,255,255,0.06)",
+  };
+
+  const showBack = !["/", "/apps"].includes(location.pathname);
+
+  const handleBack = () => {
+    if (location.pathname.startsWith("/crm")) {
+      navigate("/apps");
+      return;
+    }
+
+    if (location.pathname === "/home") {
+      navigate("/apps");
+      return;
+    }
+
+    navigate(-1);
+  };
 
   return (
     <nav
   style={{
-    backgroundColor: "#800000",
+    background: BRAND_MAROON_PURPLE_GRADIENT,
     fontFamily: "Inter, Segoe UI, Roboto, Arial",
-   padding: isMobile ? "8px 12px" : "8px 28px",   // ⬆ more horizontal breathing
+    // include safe-area inset + extra spacing so taps aren't under the notch
+    paddingTop: `calc(env(safe-area-inset-top, 0px) + 22px)`,
+    paddingLeft: isMobile
+      ? `calc(env(safe-area-inset-left, 0px) + 12px)`
+      : `calc(env(safe-area-inset-left, 0px) + 28px)`,
+    paddingRight: isMobile
+      ? `calc(env(safe-area-inset-right, 0px) + 12px)`
+      : `calc(env(safe-area-inset-right, 0px) + 28px)`,
+    paddingBottom: "10px",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     position: "sticky",
     top: 0,
     zIndex: 1000,
-    height: "72px",           // ⬆ Increased navbar height
+    height: "auto",
+    minHeight: "56px",
+    width: "100%",
     boxShadow: "0 3px 8px rgba(0,0,0,0.25)",
+    boxSizing: "border-box",
+    WebkitUserSelect: "none",
+    WebkitTouchCallout: "none",
+    WebkitTapHighlightColor: "transparent",
+    touchAction: "manipulation",
+    WebkitUserDrag: "none",
   }}
 >
 {/* LEFT — LOGO */}
-<h1
+<div
   style={{
-    color: "white",
-    fontWeight: "bold",
-    fontSize: "20px",
-    margin: 0,
-
-    // ⭐ IMPORTANT FIX
     display: "flex",
     alignItems: "center",
-    whiteSpace: "nowrap",
+    gap: 10,
     flexShrink: 0,
   }}
 >
-  ⚡ KP CRM
-</h1>
+  {showBack && (
+    <button
+      onClick={handleBack}
+      aria-label="Back"
+      style={{
+        background: "transparent",
+        border: "1px solid rgba(255,255,255,0.5)",
+        color: "#fff",
+        borderRadius: 8,
+        padding: "6px 10px",
+        fontSize: 16,
+        cursor: "pointer",
+        lineHeight: 1,
+      }}
+    >
+      ←
+    </button>
+  )}
+
+  <h1
+    style={{
+      color: "white",
+      fontWeight: "bold",
+      fontSize: isMobile ? "18px" : "20px",
+      margin: 0,
+
+      // ⭐ IMPORTANT FIX
+      display: "flex",
+      alignItems: "center",
+      whiteSpace: "nowrap",
+    }}
+  >
+    <img
+      src={kapilLogo}
+      alt="Kapil Power"
+      style={{
+        width: isMobile ? 19 : 22,
+        height: isMobile ? 19 : 22,
+        objectFit: "contain",
+        marginRight: 8,
+        borderRadius: 4,
+      }}
+    />
+    KP CRM
+  </h1>
+</div>
 
 {/* RIGHT SIDE */}
 <div
   style={{
     display: "flex",
-    gap: "26px",
+    gap: isMobile ? "14px" : "22px",
     alignItems: "center",
     overflowX: isMobile ? "auto" : "visible",
     whiteSpace: isMobile ? "nowrap" : "normal",
@@ -144,7 +242,7 @@ useEffect(() => {
   style={{ position: "relative" }}
 >
   <span
-  style={{ ...linkStyle, cursor: "pointer" }}
+  style={{ ...(location.pathname.startsWith("/crm/analytics") ? activeStyle : linkStyle), cursor: "pointer" }}
   onPointerDown={() => setShowAnalytics(prev => !prev)}
 >
   Analytics ▾
@@ -221,18 +319,18 @@ useEffect(() => {
 )}
 
         {/* SETTINGS ICON */}
-        {userData?.role === "admin" && (
+        {canSeeSettings && (
           <div
             onClick={() => navigate("/settings")}
             style={{ cursor: "pointer", color: "white" }}
             title="Settings"
           >
-            <FiSettings size={20} />
+            <FiSettings size={isMobile ? 18 : 20} />
           </div>
         )}
 
         {/* USER NAME */}
-        <div style={{ color: "white", fontSize: "13px", marginLeft: "4px" }}>
+        <div style={{ color: "white", fontSize: isMobile ? "12px" : "13px", marginLeft: "4px", fontWeight: 600 }}>
           {userData ? `${userData.name || userData.email}` : "Loading..."}
         </div>
       </div>
